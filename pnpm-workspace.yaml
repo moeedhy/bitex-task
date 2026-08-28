@@ -1,0 +1,9 @@
+packages:
+  - 'apps/*'
+  - 'libs/*'
+autoInstallPeers: true
+allowBuilds:
+  nx: true
+  unrs-resolver: true
+  '@swc/core': false
+  '@nestjs/core': false
