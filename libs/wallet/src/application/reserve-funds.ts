@@ -1,9 +1,12 @@
 import type { Asset, IdGenerator, Money } from '@bitex/platform';
+import { WalletReservation } from '../domain/wallet-reservation.js';
+import type { WalletReservationRepository } from './wallet-reservation.repository.js';
 import type { WalletRepository } from './wallet.repository.js';
 
 export class ReserveFunds {
   constructor(
     private readonly wallets: WalletRepository,
+    private readonly reservations: WalletReservationRepository,
     private readonly reservationIds: IdGenerator,
   ) {}
 
@@ -15,12 +18,15 @@ export class ReserveFunds {
   }): Promise<{ reservationId: string }> {
     const wallet = await this.wallets.getForUpdate(input.userId, input.asset);
     const reservationId = this.reservationIds.next();
-    wallet.reserve({
-      reservationId,
+    wallet.reserve(input.amount);
+    const reservation = WalletReservation.open({
+      id: reservationId,
+      walletId: wallet.id,
       withdrawalId: input.withdrawalId,
       amount: input.amount,
     });
     await this.wallets.save(wallet);
+    await this.reservations.add(reservation);
     return { reservationId };
   }
 }

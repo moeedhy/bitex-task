@@ -2,7 +2,7 @@
 
 ## Shape
 
-The service is a modular monolith with three Nx libraries and one NestJS composition root. Wallet and Withdrawal are separate bounded contexts, as requested, but remain deployed together and use one PostgreSQL database so the request flow retains an ACID boundary.
+The service is a modular monolith with three Nx libraries and one NestJS composition root. Wallet and Withdrawal are explicit domain boundaries in separate packages, but remain deployed together and use one PostgreSQL database so the request flow retains an ACID boundary.
 
 Dependency direction is:
 
@@ -36,12 +36,12 @@ Request transaction:
 
 1. Claim `(operation, idempotency_key)`.
 2. Lock Wallet with `SELECT ... FOR UPDATE`.
-3. Reserve funds and persist the reservation.
+3. Mutate Wallet reserved balance and insert an independent `WalletReservation` aggregate.
 4. Insert Withdrawal.
 5. Insert Outbox event.
 6. Store the canonical response and commit.
 
-Execution uses three phases: a short claim/PROCESSING transaction, the provider call outside PostgreSQL, and a short settlement transaction. The final transaction locks Withdrawal, finalizes or releases Wallet, and records the processed Kafka event atomically.
+Execution uses three phases: a short claim/PROCESSING transaction, the provider call outside PostgreSQL, and a short settlement transaction. The final transaction locks Withdrawal, then the independent WalletReservation and Wallet rows, transitions both aggregates, and records the processed Kafka event atomically.
 
 ## Messaging and Redis
 

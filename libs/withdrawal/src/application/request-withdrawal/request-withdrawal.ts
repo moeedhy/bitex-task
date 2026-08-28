@@ -82,7 +82,6 @@ export class RequestWithdrawal {
       const withdrawal = Withdrawal.request({
         id: withdrawalId,
         userId: command.userId,
-        asset: command.asset,
         amount: command.amount,
         destinationAddress: command.destinationAddress,
         reservationId,
@@ -100,7 +99,7 @@ export class RequestWithdrawal {
           userId: withdrawal.userId,
           asset: withdrawal.asset.code,
           amount: withdrawal.amount.toDecimalString(),
-          destinationAddress: withdrawal.destinationAddress,
+          destinationAddress: withdrawal.destinationAddress.value,
         },
       });
 

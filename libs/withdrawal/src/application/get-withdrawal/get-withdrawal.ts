@@ -1,5 +1,5 @@
 import type { WithdrawalStatus } from '../../domain/withdrawal.js';
-import { WithdrawalNotFoundError } from '../../domain/withdrawal.errors.js';
+import { WithdrawalNotFoundError } from '../withdrawal.errors.js';
 
 export interface WithdrawalView {
   withdrawalId: string;

@@ -1,14 +1,16 @@
 import { Assets, Money } from '@bitex/platform';
 import { Withdrawal } from '../../domain/withdrawal.js';
+import { WithdrawalExecutionUnresolvedError } from '../withdrawal.errors.js';
 import { ExecuteWithdrawal } from './execute-withdrawal.js';
 import type { ExecuteWithdrawalDependencies } from './execute-withdrawal.js';
 
 describe('ExecuteWithdrawal', () => {
-  const createHarness = (providerStatus: 'SUCCESS' | 'FAILED' = 'SUCCESS') => {
+  const createHarness = (
+    providerStatus: 'SUCCESS' | 'FAILED' | 'THROWS' = 'SUCCESS',
+  ) => {
     const withdrawal = Withdrawal.request({
       id: 'withdrawal-1',
       userId: 'user-123',
-      asset: Assets.USDT,
       amount: Money.parse('100', Assets.USDT),
       destinationAddress: 'TXYZ123456789',
       reservationId: 'reservation-1',
@@ -60,6 +62,9 @@ describe('ExecuteWithdrawal', () => {
       provider: {
         async execute() {
           providerCalls += 1;
+          if (providerStatus === 'THROWS') {
+            throw new Error('socket hang up');
+          }
           return providerStatus === 'SUCCESS'
             ? { status: 'SUCCESS' as const, transactionReference: 'tx-1' }
             : { status: 'FAILED' as const, reason: 'PROVIDER_ERROR' as const };
@@ -115,6 +120,22 @@ describe('ExecuteWithdrawal', () => {
     expect(harness.finalizeCalls).toBe(0);
     expect(harness.releaseCalls).toBe(1);
     expect(harness.processed.has('event-1')).toBe(true);
+  });
+
+  it('leaves an unresolved provider call PROCESSING instead of failing it', async () => {
+    const harness = createHarness('THROWS');
+
+    await expect(
+      harness.useCase.execute({
+        eventId: 'event-1',
+        withdrawalId: 'withdrawal-1',
+      }),
+    ).rejects.toThrow(WithdrawalExecutionUnresolvedError);
+
+    expect(harness.withdrawal.status).toBe('PROCESSING');
+    expect(harness.finalizeCalls).toBe(0);
+    expect(harness.releaseCalls).toBe(0);
+    expect(harness.processed.has('event-1')).toBe(false);
   });
 
   it('does not call the provider or settle a processed event twice', async () => {

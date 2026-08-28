@@ -1,5 +1,9 @@
 import { Money, resolveAsset } from '@bitex/platform';
-import { Withdrawal, WithdrawalNotFoundError } from '@bitex/withdrawal';
+import {
+  Withdrawal,
+  WithdrawalAddress,
+  WithdrawalNotFoundError,
+} from '@bitex/withdrawal';
 import type {
   WithdrawalRepository,
   WithdrawalSnapshot,
@@ -84,9 +88,9 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
     return [
       row.id,
       row.userId,
-      row.asset.code,
+      row.amount.asset.code,
       row.amount.toAtomicUnits().toString(),
-      row.destinationAddress,
+      row.destinationAddress.value,
       row.reservationId,
       row.status,
       row.transactionReference ?? null,
@@ -98,12 +102,13 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
 
   private hydrate(row: WithdrawalRow): Withdrawal {
     const asset = resolveAsset(row.asset);
-    return Withdrawal.restore({
+    return Withdrawal.reconstitute({
       id: row.id,
       userId: row.user_id,
-      asset,
       amount: Money.fromAtomicUnits(BigInt(row.amount_atomic), asset),
-      destinationAddress: row.destination_address,
+      destinationAddress: WithdrawalAddress.reconstitute(
+        row.destination_address,
+      ),
       reservationId: row.reservation_id,
       status: row.status,
       transactionReference: row.transaction_reference ?? undefined,

@@ -3,6 +3,6 @@ import type { WalletAccount } from '../domain/wallet-account.js';
 
 export interface WalletRepository {
   getForUpdate(userId: string, asset: Asset): Promise<WalletAccount>;
-  getByReservationForUpdate(reservationId: string): Promise<WalletAccount>;
+  getByIdForUpdate(walletId: string): Promise<WalletAccount>;
   save(wallet: WalletAccount): Promise<void>;
 }

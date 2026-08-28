@@ -5,8 +5,8 @@ A production-conscious digital-asset withdrawal workflow implemented as an Nx-ma
 ## Projects
 
 - `@bitex/platform` — exact `bigint` money, asset catalog, and stable technical ports.
-- `@bitex/wallet` — independent Wallet bounded context and `WalletAccount` aggregate.
-- `@bitex/withdrawal` — Withdrawal bounded context and vertical application slices.
+- `@bitex/wallet` — Wallet domain with independent `WalletAccount` and `WalletReservation` aggregates.
+- `@bitex/withdrawal` — Withdrawal domain, `WithdrawalAddress`, and vertical application slices.
 - `@bitex/api` — Nest composition root plus PostgreSQL, Kafka, Redis, HTTP, and provider adapters.
 
 ## Run with Docker
@@ -52,6 +52,7 @@ TEST_DATABASE_URL=postgresql://pooleno:pooleno@localhost:55433/pooleno_test \
 ## Correctness model
 
 - Wallet mutations load `wallets` with `SELECT ... FOR UPDATE`.
+- Reservation lifecycle uses a separately locked `WalletReservation` aggregate; Wallet never loads reservation history.
 - Wallet reservation, Withdrawal insert, Outbox insert, and idempotency completion share one PostgreSQL transaction.
 - Repository mutations fail fast without a transaction-bound client.
 - Outbox rows are leased using `FOR UPDATE SKIP LOCKED`; duplicate Kafka delivery remains expected.

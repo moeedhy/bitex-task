@@ -1,4 +1,4 @@
-import { WithdrawalNotFoundError } from '../../domain/withdrawal.errors.js';
+import { WithdrawalNotFoundError } from '../withdrawal.errors.js';
 import { GetWithdrawal } from './get-withdrawal.js';
 
 describe('GetWithdrawal', () => {

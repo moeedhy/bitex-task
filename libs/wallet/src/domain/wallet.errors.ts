@@ -7,6 +7,24 @@ export class InvalidReservationAmountError extends Error {
   }
 }
 
+export class InvalidWalletAmountError extends Error {
+  readonly code = 'INVALID_WALLET_AMOUNT' as const;
+
+  constructor() {
+    super('Wallet balance operations require a positive amount.');
+    this.name = 'InvalidWalletAmountError';
+  }
+}
+
+export class WalletAssetMismatchError extends Error {
+  readonly code = 'WALLET_ASSET_MISMATCH' as const;
+
+  constructor() {
+    super('The amount asset does not match the wallet asset.');
+    this.name = 'WalletAssetMismatchError';
+  }
+}
+
 export class InvalidWalletStateError extends Error {
   readonly code = 'INVALID_WALLET_STATE' as const;
 
@@ -25,26 +43,17 @@ export class InsufficientAvailableBalanceError extends Error {
   }
 }
 
-export class DuplicateWithdrawalReservationError extends Error {
-  readonly code = 'DUPLICATE_WITHDRAWAL_RESERVATION' as const;
+export class InsufficientReservedBalanceError extends Error {
+  readonly code = 'INSUFFICIENT_RESERVED_BALANCE' as const;
 
-  constructor(readonly withdrawalId: string) {
-    super(`Withdrawal "${withdrawalId}" already has a reservation.`);
-    this.name = 'DuplicateWithdrawalReservationError';
+  constructor() {
+    super('Wallet has insufficient reserved balance.');
+    this.name = 'InsufficientReservedBalanceError';
   }
 }
 
-export class ReservationNotFoundError extends Error {
-  readonly code = 'RESERVATION_NOT_FOUND' as const;
-
-  constructor(readonly reservationId: string) {
-    super(`Reservation "${reservationId}" was not found.`);
-    this.name = 'ReservationNotFoundError';
-  }
-}
-
-export class ReservationStateError extends Error {
-  readonly code = 'INVALID_RESERVATION_STATE' as const;
+export class InvalidReservationTransitionError extends Error {
+  readonly code = 'INVALID_RESERVATION_TRANSITION' as const;
 
   constructor(
     readonly reservationId: string,
@@ -54,6 +63,6 @@ export class ReservationStateError extends Error {
     super(
       `Cannot ${attemptedAction} reservation "${reservationId}" from ${currentStatus}.`,
     );
-    this.name = 'ReservationStateError';
+    this.name = 'InvalidReservationTransitionError';
   }
 }

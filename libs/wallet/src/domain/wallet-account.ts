@@ -1,181 +1,145 @@
-import { Asset, Money } from '@bitex/platform';
-import { Reservation } from './reservation.js';
-import type { ReservationSnapshot } from './reservation.js';
+import { Money } from '@bitex/platform';
+import type { Asset } from '@bitex/platform';
 import {
-  DuplicateWithdrawalReservationError,
   InsufficientAvailableBalanceError,
-  InvalidReservationAmountError,
+  InsufficientReservedBalanceError,
+  InvalidWalletAmountError,
   InvalidWalletStateError,
-  ReservationNotFoundError,
+  WalletAssetMismatchError,
 } from './wallet.errors.js';
 
+export interface WalletAccountSnapshot {
+  id: string;
+  userId: string;
+  asset: Asset;
+  balance: Money;
+  reservedBalance: Money;
+}
+
 export class WalletAccount {
-  private readonly reservations = new Map<string, Reservation>();
+  private constructor(private state: WalletAccountSnapshot) {}
 
-  private constructor(
-    readonly id: string,
-    readonly userId: string,
-    readonly asset: Asset,
-    private currentBalance: Money,
-    private currentReservedBalance: Money,
-  ) {}
-
-  static create(input: {
-    id: string;
-    userId: string;
-    asset: Asset;
-    balance: Money;
-  }): WalletAccount {
-    WalletAccount.assertBalances(
-      input.asset,
-      input.balance,
-      Money.zero(input.asset),
-    );
-    return new WalletAccount(
-      input.id,
-      input.userId,
-      input.asset,
-      input.balance,
-      Money.zero(input.asset),
-    );
+  static create(
+    input: Omit<WalletAccountSnapshot, 'reservedBalance'>,
+  ): WalletAccount {
+    const state = { ...input, reservedBalance: Money.zero(input.asset) };
+    WalletAccount.assertIdentity(state.id, 'Wallet');
+    WalletAccount.assertIdentity(state.userId, 'User');
+    WalletAccount.assertBalances(state);
+    return new WalletAccount(state);
   }
 
-  static restore(input: {
-    id: string;
-    userId: string;
-    asset: Asset;
-    balance: Money;
-    reservedBalance: Money;
-    reservations: ReservationSnapshot[];
-  }): WalletAccount {
-    WalletAccount.assertBalances(
-      input.asset,
-      input.balance,
-      input.reservedBalance,
-    );
-    const wallet = new WalletAccount(
-      input.id,
-      input.userId,
-      input.asset,
-      input.balance,
-      input.reservedBalance,
-    );
-    for (const snapshot of input.reservations) {
-      wallet.reservations.set(snapshot.id, Reservation.restore(snapshot));
-    }
-    return wallet;
+  static reconstitute(snapshot: WalletAccountSnapshot): WalletAccount {
+    WalletAccount.assertIdentity(snapshot.id, 'Wallet');
+    WalletAccount.assertIdentity(snapshot.userId, 'User');
+    WalletAccount.assertBalances(snapshot);
+    return new WalletAccount({ ...snapshot });
+  }
+
+  get id(): string {
+    return this.state.id;
+  }
+
+  get userId(): string {
+    return this.state.userId;
+  }
+
+  get asset(): Asset {
+    return this.state.asset;
   }
 
   get balance(): Money {
-    return this.currentBalance;
+    return this.state.balance;
   }
 
   get reservedBalance(): Money {
-    return this.currentReservedBalance;
+    return this.state.reservedBalance;
   }
 
   get availableBalance(): Money {
-    return this.currentBalance.subtract(this.currentReservedBalance);
+    return this.state.balance.subtract(this.state.reservedBalance);
   }
 
-  reserve(input: {
-    reservationId: string;
-    withdrawalId: string;
-    amount: Money;
-  }): Reservation {
-    if (!input.amount.isPositive()) {
-      throw new InvalidReservationAmountError();
-    }
-
-    if (this.findByWithdrawalId(input.withdrawalId)) {
-      throw new DuplicateWithdrawalReservationError(input.withdrawalId);
-    }
-
-    if (input.amount.isGreaterThan(this.availableBalance)) {
+  reserve(amount: Money): void {
+    this.assertOperationAmount(amount);
+    if (amount.isGreaterThan(this.availableBalance)) {
       throw new InsufficientAvailableBalanceError();
     }
-
-    const reservation = Reservation.create({
-      id: input.reservationId,
-      withdrawalId: input.withdrawalId,
-      amount: input.amount,
+    this.commit({
+      ...this.state,
+      reservedBalance: this.state.reservedBalance.add(amount),
     });
-
-    this.reservations.set(reservation.id, reservation);
-    this.currentReservedBalance = this.currentReservedBalance.add(input.amount);
-    return reservation;
   }
 
-  finalizeReservation(reservationId: string): void {
-    const reservation = this.getReservation(reservationId);
-    reservation.finalize();
-    this.currentReservedBalance = this.currentReservedBalance.subtract(
-      reservation.amount,
-    );
-    this.currentBalance = this.currentBalance.subtract(reservation.amount);
-  }
-
-  releaseReservation(reservationId: string): void {
-    const reservation = this.getReservation(reservationId);
-    reservation.release();
-    this.currentReservedBalance = this.currentReservedBalance.subtract(
-      reservation.amount,
-    );
-  }
-
-  getReservation(reservationId: string): Reservation {
-    const reservation = this.reservations.get(reservationId);
-    if (!reservation) {
-      throw new ReservationNotFoundError(reservationId);
+  releaseReserved(amount: Money): void {
+    this.assertOperationAmount(amount);
+    if (amount.isGreaterThan(this.state.reservedBalance)) {
+      throw new InsufficientReservedBalanceError();
     }
-    return reservation;
+    this.commit({
+      ...this.state,
+      reservedBalance: this.state.reservedBalance.subtract(amount),
+    });
   }
 
-  toSnapshot(): {
-    id: string;
-    userId: string;
-    asset: Asset;
-    balance: Money;
-    reservedBalance: Money;
-    reservations: ReservationSnapshot[];
-  } {
-    return {
-      id: this.id,
-      userId: this.userId,
-      asset: this.asset,
-      balance: this.currentBalance,
-      reservedBalance: this.currentReservedBalance,
-      reservations: [...this.reservations.values()].map((reservation) =>
-        reservation.toSnapshot(),
-      ),
-    };
+  captureReserved(amount: Money): void {
+    this.assertOperationAmount(amount);
+    if (amount.isGreaterThan(this.state.reservedBalance)) {
+      throw new InsufficientReservedBalanceError();
+    }
+    this.commit({
+      ...this.state,
+      balance: this.state.balance.subtract(amount),
+      reservedBalance: this.state.reservedBalance.subtract(amount),
+    });
   }
 
-  private findByWithdrawalId(withdrawalId: string): Reservation | undefined {
-    return [...this.reservations.values()].find(
-      (reservation) => reservation.withdrawalId === withdrawalId,
-    );
+  toSnapshot(): WalletAccountSnapshot {
+    return { ...this.state };
   }
 
-  private static assertBalances(
-    asset: Asset,
-    balance: Money,
-    reservedBalance: Money,
-  ): void {
-    if (!balance.asset.equals(asset) || !reservedBalance.asset.equals(asset)) {
+  /**
+   * Swaps in a candidate state only once it satisfies every balance invariant,
+   * so a rejected operation cannot leave the aggregate partially mutated.
+   */
+  private commit(next: WalletAccountSnapshot): void {
+    WalletAccount.assertBalances(next);
+    this.state = next;
+  }
+
+  private assertOperationAmount(amount: Money): void {
+    if (!amount.asset.equals(this.state.asset)) {
+      throw new WalletAssetMismatchError();
+    }
+    if (!amount.isPositive()) {
+      throw new InvalidWalletAmountError();
+    }
+  }
+
+  private static assertBalances(state: WalletAccountSnapshot): void {
+    if (
+      !state.balance.asset.equals(state.asset) ||
+      !state.reservedBalance.asset.equals(state.asset)
+    ) {
       throw new InvalidWalletStateError(
         'Wallet balances must use the wallet asset.',
       );
     }
-    if (balance.isNegative() || reservedBalance.isNegative()) {
+    if (state.balance.isNegative() || state.reservedBalance.isNegative()) {
       throw new InvalidWalletStateError(
         'Wallet and reserved balances cannot be negative.',
       );
     }
-    if (reservedBalance.isGreaterThan(balance)) {
+    if (state.reservedBalance.isGreaterThan(state.balance)) {
       throw new InvalidWalletStateError(
         'Reserved balance cannot exceed total balance.',
       );
+    }
+  }
+
+  private static assertIdentity(value: string, label: string): void {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new InvalidWalletStateError(`${label} identity is required.`);
     }
   }
 }

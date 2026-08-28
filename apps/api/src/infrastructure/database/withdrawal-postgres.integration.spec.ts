@@ -11,6 +11,7 @@ import {
 import { ExecuteWithdrawal, RequestWithdrawal } from '@bitex/withdrawal';
 import { PostgresTransactionRunner } from './postgres-transaction-runner.js';
 import { PostgresWalletRepository } from './postgres-wallet-repository.js';
+import { PostgresWalletReservationRepository } from './postgres-wallet-reservation-repository.js';
 import { PostgresWithdrawalRepository } from './postgres-withdrawal-repository.js';
 import { PostgresWithdrawalIdempotency } from './postgres-idempotency.js';
 import { PostgresOutbox } from './postgres-outbox.js';
@@ -26,17 +27,30 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
   let useCase: RequestWithdrawal;
   let transaction: PostgresTransactionRunner;
   let walletRepository: PostgresWalletRepository;
+  let walletReservationRepository: PostgresWalletReservationRepository;
   let withdrawalRepository: PostgresWithdrawalRepository;
 
   beforeAll(async () => {
-    const migration = await readFile(
+    const database = await pool.query<{ current_database: string }>(
+      'SELECT current_database()',
+    );
+    if (!database.rows[0].current_database.endsWith('_test')) {
+      throw new Error('Integration tests require a dedicated *_test database.');
+    }
+    await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
+    const migrationPaths = [
       join(
         process.cwd(),
         'src/infrastructure/database/migrations/001_initial.sql',
       ),
-      'utf8',
-    );
-    await pool.query(migration);
+      join(
+        process.cwd(),
+        'src/infrastructure/database/migrations/002_domain_aggregate_refactor.sql',
+      ),
+    ];
+    for (const migrationPath of migrationPaths) {
+      await pool.query(await readFile(migrationPath, 'utf8'));
+    }
   });
 
   beforeEach(async () => {
@@ -50,15 +64,18 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     );
     transaction = new PostgresTransactionRunner(pool);
     walletRepository = new PostgresWalletRepository(transaction);
+    walletReservationRepository = new PostgresWalletReservationRepository(
+      transaction,
+    );
     withdrawalRepository = new PostgresWithdrawalRepository(transaction);
     useCase = new RequestWithdrawal({
       transactionRunner: transaction,
       idempotency: new PostgresWithdrawalIdempotency(transaction),
       walletReservation: {
         reserve: (input) =>
-          new ReserveFunds(walletRepository, { next: randomUUID }).execute(
-            input,
-          ),
+          new ReserveFunds(walletRepository, walletReservationRepository, {
+            next: randomUUID,
+          }).execute(input),
       },
       withdrawals: withdrawalRepository,
       outbox: new PostgresOutbox(transaction),
@@ -187,8 +204,14 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
   }
 
   function executionUseCase(shouldFail: boolean): ExecuteWithdrawal {
-    const finalize = new FinalizeReservation(walletRepository);
-    const release = new ReleaseReservation(walletRepository);
+    const finalize = new FinalizeReservation(
+      walletRepository,
+      walletReservationRepository,
+    );
+    const release = new ReleaseReservation(
+      walletRepository,
+      walletReservationRepository,
+    );
     return new ExecuteWithdrawal({
       transactionRunner: transaction,
       withdrawals: withdrawalRepository,

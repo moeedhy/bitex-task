@@ -1,4 +1,5 @@
 import type { Clock, TransactionRunner } from '@bitex/platform';
+import { WithdrawalExecutionUnresolvedError } from '../withdrawal.errors.js';
 import type { WithdrawalRepository } from '../ports/withdrawal.repository.js';
 import type {
   ExecutionRequest,
@@ -39,7 +40,18 @@ export class ExecuteWithdrawal {
       return;
     }
 
-    const result = await this.dependencies.provider.execute(request);
+    let result: ExecutionResult;
+    try {
+      result = await this.dependencies.provider.execute(request);
+    } catch (cause) {
+      // A transport failure is not a provider rejection: the transfer may have
+      // happened. Leave the Withdrawal PROCESSING and the reservation ACTIVE so
+      // redelivery re-drives the idempotent provider instead of releasing funds
+      // that may already be gone.
+      throw new WithdrawalExecutionUnresolvedError(command.withdrawalId, {
+        cause,
+      });
+    }
     await this.settle(command, result);
   }
 
@@ -58,7 +70,7 @@ export class ExecuteWithdrawal {
         await this.dependencies.processedEvents.record(command.eventId);
         return null;
       }
-      if (withdrawal.status === 'FUNDS_RESERVED') {
+      if (withdrawal.status === 'PENDING') {
         withdrawal.startProcessing(this.dependencies.clock.now());
         await this.dependencies.withdrawals.save(withdrawal);
       }
@@ -67,7 +79,7 @@ export class ExecuteWithdrawal {
         withdrawalId: withdrawal.id,
         amount: withdrawal.amount.toDecimalString(),
         asset: withdrawal.asset.code,
-        destinationAddress: withdrawal.destinationAddress,
+        destinationAddress: withdrawal.destinationAddress.value,
       };
     });
   }

@@ -20,6 +20,7 @@ import {
 } from '@bitex/withdrawal';
 import { PostgresTransactionRunner } from '../infrastructure/database/postgres-transaction-runner.js';
 import { PostgresWalletRepository } from '../infrastructure/database/postgres-wallet-repository.js';
+import { PostgresWalletReservationRepository } from '../infrastructure/database/postgres-wallet-reservation-repository.js';
 import { PostgresWithdrawalRepository } from '../infrastructure/database/postgres-withdrawal-repository.js';
 import { PostgresWithdrawalIdempotency } from '../infrastructure/database/postgres-idempotency.js';
 import { PostgresOutbox } from '../infrastructure/database/postgres-outbox.js';
@@ -49,17 +50,23 @@ export class WithdrawalRuntime implements OnModuleInit, OnModuleDestroy {
   private readonly walletRepository = new PostgresWalletRepository(
     this.transaction,
   );
+  private readonly walletReservationRepository =
+    new PostgresWalletReservationRepository(this.transaction);
   private readonly withdrawalRepository = new PostgresWithdrawalRepository(
     this.transaction,
   );
-  private readonly reserveFunds = new ReserveFunds(this.walletRepository, {
-    next: randomUUID,
-  });
+  private readonly reserveFunds = new ReserveFunds(
+    this.walletRepository,
+    this.walletReservationRepository,
+    { next: randomUUID },
+  );
   private readonly finalizeReservation = new FinalizeReservation(
     this.walletRepository,
+    this.walletReservationRepository,
   );
   private readonly releaseReservation = new ReleaseReservation(
     this.walletRepository,
+    this.walletReservationRepository,
   );
   private readonly processedEvents = new PostgresProcessedEvents(
     this.transaction,

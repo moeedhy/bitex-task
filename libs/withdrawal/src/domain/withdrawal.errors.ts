@@ -7,6 +7,15 @@ export class InvalidWithdrawalError extends Error {
   }
 }
 
+export class InvalidWithdrawalAddressError extends Error {
+  readonly code = 'INVALID_WITHDRAWAL_ADDRESS' as const;
+
+  constructor(message = 'Withdrawal destination address is invalid.') {
+    super(message);
+    this.name = 'InvalidWithdrawalAddressError';
+  }
+}
+
 export class InvalidWithdrawalTransitionError extends Error {
   readonly code = 'INVALID_WITHDRAWAL_TRANSITION' as const;
 
@@ -18,14 +27,5 @@ export class InvalidWithdrawalTransitionError extends Error {
       `Cannot transition withdrawal from ${currentStatus} to ${targetStatus}.`,
     );
     this.name = 'InvalidWithdrawalTransitionError';
-  }
-}
-
-export class WithdrawalNotFoundError extends Error {
-  readonly code = 'WITHDRAWAL_NOT_FOUND' as const;
-
-  constructor(readonly withdrawalId: string) {
-    super(`Withdrawal "${withdrawalId}" was not found.`);
-    this.name = 'WithdrawalNotFoundError';
   }
 }
