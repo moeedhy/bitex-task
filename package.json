@@ -15,6 +15,7 @@
     "@nx/nest": "23.1.2",
     "@nx/node": "23.1.2",
     "@nx/vitest": "23.1.2",
+    "@nx/webpack": "23.1.2",
     "@nx/workspace": "23.1.2",
     "@swc/core": "~1.15.5",
     "@swc/helpers": "~0.5.18",

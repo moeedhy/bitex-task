@@ -8,6 +8,12 @@
     },
     {
       "path": "./libs/withdrawal"
+    },
+    {
+      "path": "./libs/wallet"
+    },
+    {
+      "path": "./apps/api"
     }
   ]
 }

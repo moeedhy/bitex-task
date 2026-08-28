@@ -1,4 +1,3 @@
-
 import { Asset } from './asset.js';
 import { InvalidAssetError } from './money.errors.js';
 
@@ -11,28 +10,19 @@ describe('Asset', () => {
       expect(asset.decimals).toBe(6);
     });
 
-    it.each([
-      '',
-      'usdt',
-      ' USDT',
-      'USDT ',
-      'USD T',
-      '+USDT',
-    ])('rejects invalid asset code "%s"', (code) => {
-      expect(() => Asset.create(code, 6)).toThrow(InvalidAssetError);
-    });
+    it.each(['', 'usdt', ' USDT', 'USDT ', 'USD T', '+USDT'])(
+      'rejects invalid asset code "%s"',
+      (code) => {
+        expect(() => Asset.create(code, 6)).toThrow(InvalidAssetError);
+      },
+    );
 
-    it.each([
-      -1,
-      1.5,
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      31,
-    ])('rejects invalid decimal precision %s', (decimals) => {
-      expect(() => Asset.create('USDT', decimals)).toThrow(
-        InvalidAssetError,
-      );
-    });
+    it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 31])(
+      'rejects invalid decimal precision %s',
+      (decimals) => {
+        expect(() => Asset.create('USDT', decimals)).toThrow(InvalidAssetError);
+      },
+    );
   });
 
   describe('equals', () => {

@@ -12,5 +12,8 @@
     },
     "./package.json": "./package.json"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@bitex/platform": "workspace:*",
+    "zod": "^4.4.3"
+  }
 }

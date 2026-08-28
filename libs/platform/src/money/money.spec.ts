@@ -42,15 +42,13 @@ describe('Money', () => {
       'NaN',
       'Infinity',
     ])('rejects non-canonical monetary input "%s"', (value) => {
-      expect(() => Money.parse(value, USDT)).toThrow(
-        InvalidMoneyAmountError,
-      );
+      expect(() => Money.parse(value, USDT)).toThrow(InvalidMoneyAmountError);
     });
 
     it('rejects JavaScript numbers at runtime', () => {
-      expect(() =>
-        Money.parse(0.1 as unknown as string, USDT),
-      ).toThrow(InvalidMoneyAmountError);
+      expect(() => Money.parse(0.1 as unknown as string, USDT)).toThrow(
+        InvalidMoneyAmountError,
+      );
     });
 
     it('rejects precision beyond the asset precision', () => {
@@ -91,21 +89,16 @@ describe('Money', () => {
       [1n, '0.000001'],
       [-1n, '-0.000001'],
       [-10_500_000n, '-10.5'],
-    ])(
-      'formats %s atomic units canonically',
-      (atomicUnits, expected) => {
-        const money = Money.fromAtomicUnits(atomicUnits, USDT);
+    ])('formats %s atomic units canonically', (atomicUnits, expected) => {
+      const money = Money.fromAtomicUnits(atomicUnits, USDT);
 
-        expect(money.toDecimalString()).toBe(expected);
-      },
-    );
+      expect(money.toDecimalString()).toBe(expected);
+    });
 
     it('supports assets with zero decimals', () => {
       const asset = Asset.create('POINT', 0);
 
-      expect(
-        Money.fromAtomicUnits(42n, asset).toDecimalString(),
-      ).toBe('42');
+      expect(Money.fromAtomicUnits(42n, asset).toDecimalString()).toBe('42');
     });
   });
 
@@ -132,17 +125,13 @@ describe('Money', () => {
 
   describe('subtract', () => {
     it('subtracts exact same-asset amounts', () => {
-      const result = Money.parse('100', USDT).subtract(
-        Money.parse('80', USDT),
-      );
+      const result = Money.parse('100', USDT).subtract(Money.parse('80', USDT));
 
       expect(result.toDecimalString()).toBe('20');
     });
 
     it('allows a negative mathematical result', () => {
-      const result = Money.parse('20', USDT).subtract(
-        Money.parse('80', USDT),
-      );
+      const result = Money.parse('20', USDT).subtract(Money.parse('80', USDT));
 
       expect(result.toDecimalString()).toBe('-60');
     });
@@ -152,9 +141,9 @@ describe('Money', () => {
     it('rejects addition across different assets', () => {
       const BTC = Asset.create('BTC', 8);
 
-      expect(() =>
-        Money.parse('1', USDT).add(Money.parse('1', BTC)),
-      ).toThrow(AssetMismatchError);
+      expect(() => Money.parse('1', USDT).add(Money.parse('1', BTC))).toThrow(
+        AssetMismatchError,
+      );
     });
 
     it('rejects subtraction across different assets', () => {
@@ -177,9 +166,7 @@ describe('Money', () => {
       const brokenUSDT = Asset.create('USDT', 18);
 
       expect(() =>
-        Money.parse('1', USDT).add(
-          Money.parse('1', brokenUSDT),
-        ),
+        Money.parse('1', USDT).add(Money.parse('1', brokenUSDT)),
       ).toThrow(AssetMismatchError);
     });
   });
@@ -187,18 +174,14 @@ describe('Money', () => {
   describe('equals', () => {
     it('uses monetary value rather than input formatting', () => {
       expect(
-        Money.parse('100', USDT).equals(
-          Money.parse('100.000000', USDT),
-        ),
+        Money.parse('100', USDT).equals(Money.parse('100.000000', USDT)),
       ).toBe(true);
     });
 
     it('returns false for different assets', () => {
       const BTC = Asset.create('BTC', 8);
 
-      expect(
-        Money.parse('1', USDT).equals(Money.parse('1', BTC)),
-      ).toBe(false);
+      expect(Money.parse('1', USDT).equals(Money.parse('1', BTC))).toBe(false);
     });
   });
 

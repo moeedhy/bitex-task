@@ -1,0 +1,8 @@
+.git
+.env
+.nx
+.pnpm-store
+dist
+node_modules
+test-output
+tmp

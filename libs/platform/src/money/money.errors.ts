@@ -32,9 +32,7 @@ export class MoneyPrecisionExceededError extends Error {
     readonly assetCode: string,
     readonly allowedDecimals: number,
   ) {
-    super(
-      `${assetCode} supports at most ${allowedDecimals} decimal places.`,
-    );
+    super(`${assetCode} supports at most ${allowedDecimals} decimal places.`);
     this.name = 'MoneyPrecisionExceededError';
   }
 }

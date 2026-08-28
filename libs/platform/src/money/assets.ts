@@ -6,17 +6,11 @@ export const Assets = Object.freeze({
 });
 
 const assetsByCode = new Map<string, Asset>(
-  Object.values(Assets).map((asset) => [
-    asset.code,
-    asset,
-  ]),
+  Object.values(Assets).map((asset) => [asset.code, asset]),
 );
 
 export function resolveAsset(code: string): Asset {
-  const asset =
-    typeof code === 'string'
-      ? assetsByCode.get(code)
-      : undefined;
+  const asset = typeof code === 'string' ? assetsByCode.get(code) : undefined;
 
   if (!asset) {
     throw new UnsupportedAssetError(String(code));

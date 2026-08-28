@@ -1,4 +1,4 @@
-import {z} from "zod";
+import { z } from 'zod';
 
 export const ExecutionResultSchema = z.discriminatedUnion('status', [
   z.strictObject({
@@ -23,7 +23,5 @@ export const ExecutionRequestSchema = z.strictObject({
 export type ExecutionRequest = z.infer<typeof ExecutionRequestSchema>;
 
 export abstract class WithdrawalProvider {
-
   abstract execute(request: ExecutionRequest): Promise<ExecutionResult>;
-
 }
