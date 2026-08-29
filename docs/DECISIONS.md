@@ -738,6 +738,16 @@ it described:
   the file is reconciled against the schema. Neither held:
   `KAFKA_TOPIC_PARTITIONS` and `KAFKA_TOPIC_REPLICATION_FACTOR` were undocumented
   — the first being the knob §44 argues at length is a deliberate choice.
+- `README.md` said the concurrency requirement is "verified on every push".
+  It was verified on **no** push: `.github/workflows/ci.yml` triggered on
+  `branches: [main]` and this repository's default branch is `master`, so the
+  only run it ever produced came from the `pull_request` trigger — and that run
+  failed, in its first step, because `\gexec` is a psql meta-command and cannot
+  be passed through `psql -c`. Both are fixed, and both were found by running
+  `gh run list` rather than by reading the workflow, which is the point: a
+  workflow file that looks correct and a workflow that runs are different
+  claims. The green badge nobody had is worse than a red one, because a
+  pipeline that never fires never contradicts anything.
 - Reconciling in the other direction found `GLOBAL_PREFIX`, declared in the
   config schema with a default of `'api'` and **read by nothing**: `main.ts`
   never calls `setGlobalPrefix`. Documenting it would have advertised a prefix
