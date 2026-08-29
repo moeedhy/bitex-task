@@ -5,14 +5,15 @@ import {
   Headers,
   HttpException,
   HttpStatus,
+  Injectable,
   Logger,
   Param,
   Post,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { Money, resolveAsset } from '@bitex/platform';
+import { GetWithdrawal, RequestWithdrawal } from '@bitex/withdrawal';
 import { z } from 'zod';
-import { WithdrawalRuntime } from './withdrawal-runtime.js';
+import { RedisRateLimiter } from '../infrastructure/redis/redis-rate-limiter.js';
 
 const RequestSchema = z.strictObject({
   userId: z.string().trim().min(1).max(128),
@@ -21,11 +22,24 @@ const RequestSchema = z.strictObject({
   destinationAddress: z.string().trim().min(1).max(256),
 });
 
+/**
+ * Transport concerns only: shape, the required header, the rate limit, and
+ * turning raw strings into semantic values.
+ *
+ * Amount validity, idempotency semantics and request fingerprinting all belong
+ * to the workflow, so this class holds no business rule and reaches no
+ * repository — it depends on two use cases and nothing else.
+ */
+@Injectable()
 @Controller('withdrawals')
-export class AppController {
-  private readonly logger = new Logger(AppController.name);
+export class WithdrawalsController {
+  private readonly logger = new Logger(WithdrawalsController.name);
 
-  constructor(private readonly runtime: WithdrawalRuntime) {}
+  constructor(
+    private readonly requestWithdrawal: RequestWithdrawal,
+    private readonly getWithdrawal: GetWithdrawal,
+    private readonly rateLimiter: RedisRateLimiter,
+  ) {}
 
   @Post()
   async createWithdrawal(
@@ -40,35 +54,16 @@ export class AppController {
       );
     }
     const body = RequestSchema.parse(rawBody);
-    const asset = resolveAsset(body.asset);
-    const amount = Money.parse(body.amount, asset);
-    if (!amount.isPositive()) {
-      throw new HttpException(
-        'Amount must be greater than zero.',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (!(await this.runtime.rateLimiter.allow(body.userId))) {
+    const amount = Money.parse(body.amount, resolveAsset(body.asset));
+    if (!(await this.rateLimiter.allow(body.userId))) {
       throw new HttpException(
         'Withdrawal rate limit exceeded.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    const fingerprint = createHash('sha256')
-      .update(
-        JSON.stringify({
-          userId: body.userId,
-          asset: asset.code,
-          amount: amount.toDecimalString(),
-          destinationAddress: body.destinationAddress,
-        }),
-      )
-      .digest('hex');
-    const result = await this.runtime.requestWithdrawal.execute({
+    const result = await this.requestWithdrawal.execute({
       idempotencyKey: idempotencyKey.trim(),
-      fingerprint,
       userId: body.userId,
-      asset,
       amount,
       destinationAddress: body.destinationAddress,
     });
@@ -83,7 +78,7 @@ export class AppController {
   }
 
   @Get(':withdrawalId')
-  getWithdrawal(@Param('withdrawalId') withdrawalId: string) {
-    return this.runtime.getWithdrawal.execute(withdrawalId);
+  getById(@Param('withdrawalId') withdrawalId: string) {
+    return this.getWithdrawal.execute(withdrawalId);
   }
 }

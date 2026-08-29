@@ -1,10 +1,14 @@
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller.js';
-import { WithdrawalRuntime } from './withdrawal-runtime.js';
+import { APP_FILTER } from '@nestjs/core';
+import { MessagingModule } from '../composition/messaging.module.js';
+import { RedisModule } from '../composition/redis.module.js';
+import { WithdrawalModule } from '../composition/withdrawal.module.js';
+import { ApiExceptionFilter } from './api-exception.filter.js';
+import { WithdrawalsController } from './withdrawals.controller.js';
 
 @Module({
-  imports: [],
-  controllers: [AppController],
-  providers: [WithdrawalRuntime],
+  imports: [WithdrawalModule, RedisModule, MessagingModule],
+  controllers: [WithdrawalsController],
+  providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],
 })
 export class AppModule {}

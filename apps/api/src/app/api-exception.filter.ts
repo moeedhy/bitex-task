@@ -10,7 +10,6 @@ import { ZodError } from 'zod';
 
 const statusByCode: Record<string, number> = {
   IDEMPOTENCY_CONFLICT: HttpStatus.CONFLICT,
-  IDEMPOTENCY_IN_PROGRESS: HttpStatus.CONFLICT,
   INSUFFICIENT_AVAILABLE_BALANCE: HttpStatus.UNPROCESSABLE_ENTITY,
   WITHDRAWAL_NOT_FOUND: HttpStatus.NOT_FOUND,
   WALLET_NOT_FOUND: HttpStatus.NOT_FOUND,

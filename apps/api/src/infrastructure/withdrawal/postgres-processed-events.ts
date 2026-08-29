@@ -1,5 +1,5 @@
 import type { ProcessedEventPort } from '@bitex/withdrawal';
-import type { PostgresTransactionRunner } from './postgres-transaction-runner.js';
+import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
 
 export class PostgresProcessedEvents implements ProcessedEventPort {
   constructor(

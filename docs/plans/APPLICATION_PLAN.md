@@ -1,2424 +1,377 @@
-# Application Layer Implementation Plan
+# Application Layer
 
-## 1. Purpose and scope
+## 1. Scope and precedence
 
-Implement the application layer for the wallet-withdrawal workflow.
+This document describes the application layer of the wallet-withdrawal
+workflow: the use cases, the ports they depend on, the transaction boundaries
+they own, and the failure decisions they make.
 
-The application layer is responsible for:
+It is written in the indicative because the layer is built. Where it and
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) disagree about the
+application layer, this document wins; that document remains the reference for
+the infrastructure and delivery concerns it covers. Requirements are cited as
+`docs/TASK.md §N`.
 
-- expressing business use cases,
-- orchestrating domain aggregates,
-- defining atomic transaction boundaries,
-- defining inbound and outbound ports,
-- coordinating Wallet and Withdrawal modules,
-- durable HTTP idempotency,
-- Outbox coordination,
-- asynchronous Withdrawal execution,
-- Kafka message idempotency,
-- provider interaction through explicit ports,
-- query use cases,
-- application-specific errors and results.
+The application layer expresses business use cases, orchestrates aggregates,
+defines transaction boundaries, owns the inbound and outbound ports, and
+decides what happens when something fails. It contains no SQL, no ORM or
+`pg` types, no Kafka or Redis clients, no HTTP types, no transaction handles,
+and no wallet or withdrawal arithmetic — those rules belong to the aggregates.
 
-The application layer must not contain:
+## 2. Shape
 
-- wallet arithmetic,
-- Withdrawal transition rules,
-- Reservation transition rules,
-- SQL,
-- ORM entities,
-- Redis commands,
-- Kafka producer/consumer implementation details,
-- HTTP controllers,
-- external provider SDK details,
-- PostgreSQL transaction clients,
-- `EntityManager`,
-- `QueryRunner`,
-- Prisma transaction clients,
-- `TransactionHost`,
-- explicit AsyncLocalStorage access.
-
-The challenge requires reservation, Withdrawal creation, Outbox persistence, and durable idempotency to participate in one PostgreSQL transaction where applicable. fileciteturn0file0L119-L128
-
----
-
-# 2. Architectural model
-
-Use three complementary architectural ideas.
-
-## Domain-Driven Design
-
-The application layer coordinates the approved domain model:
+Three libraries, one composition root:
 
 ```text
-WalletAccount        Aggregate Root
-WalletReservation    Aggregate Root
-Withdrawal           Aggregate Root
+@bitex/platform     Money, Asset, and stable technical ports
+@bitex/wallet       WalletAccount + WalletReservation aggregates, wallet use cases
+@bitex/withdrawal   Withdrawal aggregate, withdrawal use cases and ports
+@bitex/api          Nest composition root and every adapter
 ```
 
-It must not duplicate the invariants owned by these aggregates.
-
-## Vertical Slice Architecture
-
-Application behavior is organized around business use cases:
+Behaviour is organised as vertical slices, and dependencies cross boundaries in
+one direction only:
 
 ```text
-RequestWithdrawal
-
-ExecuteWithdrawal
-
-GetWithdrawal
-```
-
-Wallet-side application capabilities include:
-
-```text
-ReserveFunds
-
-FinalizeReservation
-
-ReleaseReservation
-```
-
-Vertical slices define application cohesion.
-
-## Hexagonal Architecture
-
-Hexagonal Architecture defines dependency direction and system boundaries:
-
-```text
-Driving Adapter
-    HTTP / Kafka / Job
+      HTTP            Kafka consumer        recovery timer
+        |                   |                     |
+        v                   v                     v
+ RequestWithdrawal   ExecuteWithdrawal   RecoverStuckWithdrawals
+ GetWithdrawal
         |
         v
-Application Use Case
+   domain aggregates
         |
         v
-Domain
-        |
-        v
-Outbound Port
-        |
-        v
-Driven Adapter
-    PostgreSQL / Provider / Outbox / Wallet module
+   outbound ports  ->  PostgreSQL / Kafka / provider / wallet adapters
 ```
 
-The challenge explicitly asks for clear Domain, Application, and Infrastructure separation and for Wallet/Withdrawal modules to communicate through explicit boundaries. fileciteturn0file0L209-L268
+Use cases are concrete classes taking a single dependencies object. There is no
+`UseCase<I, O>`, no `Repository<T>`, no command bus: direct invocation is
+clearer at this size, and generic wrappers would hide exactly the semantics
+hexagonal boundaries exist to make explicit.
 
----
+Ports are TypeScript `interface`s. Nest modules — one per bounded context —
+register every provider with `useFactory` against a class token and resolve the
+interfaces inside those factories. The container therefore has a real dependency
+graph while `libs/*` contains no NestJS import at all, and `WalletModule` can
+export its use cases while keeping its repositories private.
 
-# 3. Primary application rule
+## 3. Where logic lives
 
-Use this rule throughout implementation:
+> The domain decides whether a state transition is legal.
+> The application decides which operations take part in a workflow, and what
+> happens when one of them fails.
+> Infrastructure performs IO and enforces physical locking.
 
-> The domain decides whether a state transition is valid.  
-> The application decides which domain operations participate in a business workflow.  
-> Infrastructure performs IO and enforces physical transaction/concurrency mechanisms.
+`WalletAccount.reserve()` deciding that a reservation would overdraw the wallet
+is domain behaviour. Choosing to reserve funds *before* creating the Withdrawal,
+inside one transaction, and to reject the request when the Idempotency-Key was
+reused with a different payload, is application behaviour.
 
-For example:
+## 4. Transaction ownership
 
-```text
-WalletAccount.reserve()
-```
+Every mutating operation is either a transaction **owner** or a **participant**,
+and the answer is never ambiguous:
 
-is domain behavior.
+| Operation | Role |
+| --- | --- |
+| `RequestWithdrawal` | owner |
+| `ExecuteWithdrawal` (prepare / settle) | owner of two short transactions |
+| `RecoverStuckWithdrawals` | owner |
+| `ReserveFunds`, `FinalizeReservation`, `ReleaseReservation` | participants |
+| every repository, outbox, idempotency and inbox adapter | participant |
 
-But:
-
-```text
-load Wallet
-reserve funds
-create WalletReservation
-create Withdrawal
-persist Outbox
-complete idempotency
-```
-
-is application orchestration.
-
----
-
-# 4. Vertical slices are the primary application boundary
-
-Do not create one large service such as:
-
-```text
-WithdrawalService
-    request()
-    execute()
-    query()
-    settle()
-    retry()
-```
-
-Prefer separate use cases:
-
-```text
-RequestWithdrawal
-
-ExecuteWithdrawal
-
-GetWithdrawal
-```
-
-Each slice should contain only the contracts and helpers specific to that operation.
-
-Conceptually:
-
-```text
-RequestWithdrawal
-    input/command
-    result
-    use case
-    slice-specific ports
-    application errors
-
-
-ExecuteWithdrawal
-    input/command
-    use case
-    provider result types
-    slice-specific ports
-
-
-GetWithdrawal
-    query/input
-    result/view
-    query port
-```
-
-Do not force this into a particular folder hierarchy.
-
-Follow the existing codebase structure.
-
----
-
-# 5. Inbound ports
-
-For this application, the use-case class itself should normally be the inbound/driving port.
-
-Example:
+Application code expresses only *this must be atomic*:
 
 ```ts
-export class RequestWithdrawal {
-  async execute(
-    command: RequestWithdrawalCommand,
-  ): Promise<RequestWithdrawalResult> {
-    // orchestration
-  }
-}
+return this.dependencies.transactionRunner.run(async () => { /* workflow */ });
 ```
 
-Do not automatically create:
+`PostgresTransactionRunner` binds one `pg` client to an `AsyncLocalStorage`
+scope. A nested `run` joins the active transaction instead of opening a second
+one, which is what makes a wallet use case a participant when a withdrawal
+workflow calls it. Participants obtain the bound client from infrastructure and
+throw `MissingTransactionError` when there is none, so a forgotten boundary
+fails loudly rather than silently losing its row lock.
 
-```ts
-interface RequestWithdrawalUseCase {
-  execute(...): Promise<...>;
-}
-```
+No transaction object ever appears in an application signature.
 
-with a second implementation class unless a real substitution boundary exists.
+## 5. RequestWithdrawal
 
-Avoid generic abstractions such as:
-
-```ts
-interface UseCase<I, O> {
-  execute(input: I): Promise<O>;
-}
-```
-
-They add little semantic value.
-
-Concrete use-case classes are explicit, testable, and easy for NestJS to provide.
-
----
-
-# 6. Outbound ports
-
-Create ports only for capabilities the application requires but does not own.
-
-Expected examples include:
-
-```text
-TransactionRunner
-
-WalletReservationPort
-
-WalletSettlementPort
-
-WithdrawalRepository
-
-RequestWithdrawalIdempotencyPort
-
-OutboxWriter
-
-WithdrawalProvider
-
-ExecutionInboxPort
-
-WithdrawalQueryPort
-
-Clock
-
-UniqueIdGenerator
-```
-
-Ports must describe semantic capabilities.
-
-Good:
-
-```ts
-abstract class WalletReservationPort {
-  abstract reserve(
-    request: ReserveWalletFunds,
-  ): Promise<ReservedWalletFunds>;
-}
-```
-
-Bad:
-
-```ts
-interface DatabasePort {
-  query(sql: string): Promise<unknown>;
-}
-```
-
-Good:
-
-```ts
-abstract class WithdrawalProvider {
-  abstract execute(
-    command: ExecuteProviderWithdrawal,
-  ): Promise<ProviderExecutionResult>;
-}
-```
-
-Bad:
-
-```ts
-interface HttpClient {
-  post<T>(...): Promise<T>;
-}
-```
-
-when the application actually needs the business capability "execute Withdrawal."
-
----
-
-# 7. Port ownership
-
-Use consumer-owned ports for cross-module interaction.
-
-`RequestWithdrawal` requires a capability from Wallet:
-
-```text
-reserve funds
-```
-
-Therefore Withdrawal application owns a contract such as:
-
-```ts
-export abstract class WalletReservationPort {
-  abstract reserve(
-    request: ReserveWalletFunds,
-  ): Promise<ReservedWalletFunds>;
-}
-```
-
-Conceptually:
-
-```text
-RequestWithdrawal
-        |
-        v
-WalletReservationPort
-        ^
-        |
-WalletReservationAdapter
-        |
-        v
-Wallet ReserveFunds application operation
-        |
-        v
-Wallet domain
-```
-
-This prevents Withdrawal from depending on Wallet's repositories or aggregates.
-
-Do not inject:
-
-```text
-WalletRepository
-WalletReservationRepository
-WalletAccount
-```
-
-directly into `RequestWithdrawal`.
-
-The challenge explicitly asks Wallet and Withdrawal to communicate through explicit application/domain boundaries. fileciteturn0file0L209-L234
-
----
-
-# 8. Cross-module ports must be narrow
-
-Do not create:
-
-```ts
-abstract class WalletPort {
-  abstract reserve(...): Promise<...>;
-  abstract release(...): Promise<...>;
-  abstract finalize(...): Promise<...>;
-  abstract balance(...): Promise<...>;
-  abstract deposit(...): Promise<...>;
-}
-```
-
-Use capability-specific ports.
-
-For RequestWithdrawal:
-
-```ts
-abstract class WalletReservationPort {
-  abstract reserve(
-    request: ReserveWalletFunds,
-  ): Promise<ReservedWalletFunds>;
-}
-```
-
-For settlement:
-
-```ts
-abstract class WalletSettlementPort {
-  abstract finalize(
-    reservationId: ReservationId,
-  ): Promise<void>;
-
-  abstract release(
-    reservationId: ReservationId,
-  ): Promise<void>;
-}
-```
-
-This follows Interface Segregation and minimizes cross-module coupling.
-
-The same adapter may implement both contracts if convenient.
-
----
-
-# 9. TypeScript port strategy for NestJS
-
-For ports regularly injected through NestJS, prefer **abstract classes**.
-
-Example:
-
-```ts
-export abstract class TransactionRunner {
-  abstract run<T>(
-    operation: () => Promise<T>,
-  ): Promise<T>;
-}
-```
-
-or:
-
-```ts
-export abstract class WithdrawalProvider {
-  abstract execute(
-    command: ExecuteProviderWithdrawal,
-  ): Promise<ProviderExecutionResult>;
-}
-```
-
-Reasons:
-
-- provides compile-time contract,
-- exists at runtime,
-- can serve directly as a Nest DI token,
-- avoids string tokens,
-- avoids Symbol-token boilerplate,
-- allows normal constructor injection.
-
-Example:
-
-```ts
-@Injectable()
-export class RequestWithdrawal {
-  constructor(
-    private readonly transactions:
-      TransactionRunner,
-
-    private readonly wallet:
-      WalletReservationPort,
-  ) {}
-}
-```
-
-Nest wiring:
-
-```ts
-{
-  provide: WalletReservationPort,
-  useClass: WalletReservationAdapter,
-}
-```
-
----
-
-# 10. When to use interfaces instead
-
-Use a TypeScript `interface` when the contract is primarily compile-time and does not need to act directly as a Nest DI token.
-
-Examples:
-
-```text
-small internal structural contracts
-test-only contracts
-non-DI configuration shapes
-pure application data contracts
-```
-
-An `interface + Symbol` token remains valid when the existing codebase already uses that pattern.
-
-Do not mix:
-
-```text
-abstract class ports
-interface + Symbol ports
-string-token ports
-```
-
-randomly.
-
-Follow one consistent application convention.
-
-Recommended default for this NestJS project:
-
-```text
-Nest-injected application port
-    -> abstract class
-
-Pure structural type
-    -> interface / type
-
-Use case
-    -> concrete class
-
-Alternative outcomes
-    -> discriminated union
-```
-
----
-
-# 11. NestJS dependency policy
-
-The Domain Layer remains completely framework-independent.
-
-For the Application Layer, allowing:
-
-```ts
-@Injectable()
-```
-
-is an acceptable pragmatic choice.
-
-Do not allow application behavior to depend on Nest APIs.
-
-Acceptable:
-
-```ts
-@Injectable()
-export class RequestWithdrawal {}
-```
-
-Reject:
-
-```text
-BadRequestException
-
-HttpException
-
-Request
-
-Response
-
-InjectRepository
-
-TransactionHost
-
-ConfigService containing business decisions
-
-KafkaContext
-
-Redis client
-```
-
-inside application orchestration.
-
-Rule:
-
-```text
-Domain
-    no NestJS
-
-Application
-    Nest DI metadata allowed
-    no Nest-specific business behavior
-
-Infrastructure / Presentation
-    full Nest usage
-```
-
-If the existing codebase keeps application completely framework-neutral, keep that convention and use Nest `useFactory` composition instead.
-
-Do not restructure the codebase solely for stylistic purity.
-
----
-
-# 12. TransactionRunner
-
-Use one shared technical port for application transactions.
-
-Recommended:
-
-```ts
-export abstract class TransactionRunner {
-  abstract run<T>(
-    operation: () => Promise<T>,
-  ): Promise<T>;
-}
-```
-
-Do not expose:
-
-```text
-EntityManager
-QueryRunner
-Prisma.TransactionClient
-TransactionHost
-AsyncLocalStorage
-Postgres Client
-```
-
-through the contract.
-
-Application expresses:
-
-```text
-this workflow must execute atomically
-```
-
-Infrastructure decides how.
-
----
-
-# 13. Transaction ownership
-
-Every mutating application operation must be clearly classified as:
-
-```text
-transaction owner
-```
-
-or:
-
-```text
-transaction participant
-```
-
-For RequestWithdrawal:
-
-```text
-RequestWithdrawal
-    OWNER
-
-ReserveFunds
-    PARTICIPANT
-
-WithdrawalRepository
-    PARTICIPANT
-
-Wallet repositories
-    PARTICIPANTS
-
-Idempotency persistence
-    PARTICIPANT
-
-Outbox persistence
-    PARTICIPANT
-```
-
-Only the top-level workflow starts the transaction.
-
-Do not start independent transactions inside nested Wallet operations.
-
----
-
-# 14. Transaction propagation
-
-Application code should only contain:
-
-```ts
-return this.transactions.run(async () => {
-  // workflow
-});
-```
-
-Infrastructure may implement the physical transaction using:
-
-```text
-nestjs-cls
-AsyncLocalStorage
-TransactionHost
-ORM transaction
-```
-
-The application must not know which mechanism is used.
-
-Repositories and adapters participating in the workflow obtain the currently active transaction through infrastructure-level CLS propagation.
-
-Do not pass transaction parameters:
-
-```ts
-wallet.reserve(command, tx);
-```
-
-or:
-
-```ts
-repository.save(entity, tx);
-```
-
-through application contracts.
-
----
-
-# 15. Transaction-required capabilities
-
-Financial mutation capabilities must document whether an active application transaction is required.
-
-Examples:
-
-```text
-WalletReservationPort.reserve()
-WalletSettlementPort.finalize()
-WalletSettlementPort.release()
-WithdrawalRepository.getForUpdate()
-```
-
-must normally execute inside an active transaction.
-
-The contract does not accept a transaction parameter.
-
-Infrastructure should fail fast if a critical mutation adapter is called outside the required transaction.
-
-This prevents silent loss of locking/atomicity guarantees.
-
----
-
-# 16. Shared technical application abstractions
-
-Before adding shared abstractions, inspect the existing platform/application library.
-
-Good candidates for genuinely shared technical contracts are:
-
-```text
-TransactionRunner
-
-Clock
-
-UniqueIdGenerator
-```
-
-Potentially:
-
-```text
-OutboxWriter
-
-Inbox
-
-ApplicationLogger
-```
-
-only if the platform already standardizes them.
-
-Do not move business-specific ports into platform/shared code.
-
-Keep these BC/slice-specific:
-
-```text
-WalletReservationPort
-
-WalletSettlementPort
-
-WithdrawalProvider
-
-WithdrawalRepository
-
-RequestWithdrawalIdempotencyPort
-
-WithdrawalQueryPort
-```
-
----
-
-# 17. Generic abstractions to reject
-
-Do not introduce:
-
-```text
-Repository<T>
-
-CrudRepository<T>
-
-UseCase<I, O>
-
-ApplicationService<T>
-
-QueryRepository<T>
-
-Mapper<TSource, TDestination>
-
-WalletPort
-
-Provider<T>
-
-GenericIdempotencyRepository<T>
-
-GenericEventBus
-```
-
-without demonstrated reusable semantics.
-
-Generic abstractions often erase the exact behavior that Hexagonal Architecture is supposed to make explicit.
-
----
-
-# 18. Application commands
-
-Commands should be immutable semantic inputs.
-
-Example:
-
-```ts
-export type RequestWithdrawalCommand =
-  Readonly<{
-    idempotencyKey: IdempotencyKey;
-    userId: UserId;
-    amount: AssetAmount;
-    destination: WithdrawalAddress;
-  }>;
-```
-
-Do not duplicate asset separately if `AssetAmount` already contains it.
-
-Avoid:
-
-```ts
-{
-  asset: Asset;
-  amount: AssetAmount;
-}
-```
-
-unless the application genuinely needs both independently.
-
-Make contradictory input states difficult or impossible to represent.
-
----
-
-# 19. HTTP DTOs are not commands
-
-HTTP DTO:
-
-```text
-raw strings
-validation decorators
-transport concerns
-```
-
-Application command:
-
-```text
-semantic values
-domain/application types
-immutable input
-```
-
-Flow:
-
-```text
-HTTP DTO
-    |
-    v
-Controller / inbound mapper
-    |
-    v
-RequestWithdrawalCommand
-    |
-    v
-RequestWithdrawal
-```
-
-Do not pass Nest DTOs deeply into application code.
-
----
-
-# 20. Validation responsibility
-
-Use three levels.
-
-## Transport validation
-
-Examples:
-
-```text
-required header
-required field
-JSON type
-maximum request-string length
-```
-
-Owned by controller/Kafka adapter.
-
-## Domain validation
-
-Examples:
-
-```text
-amount positive
-valid asset arithmetic
-valid Withdrawal transition
-sufficient wallet balance
-Reservation lifecycle
-```
-
-Owned by domain.
-
-## Application validation
-
-Examples:
-
-```text
-idempotency conflict
-record not found
-already processed event
-workflow prerequisites
-```
-
-Owned by use cases.
-
-Do not duplicate domain rules in application code.
-
----
-
-# 21. Application results
-
-Do not return aggregates directly from use cases.
-
-Prefer:
-
-```ts
-export type RequestWithdrawalResult =
-  Readonly<{
-    withdrawalId: WithdrawalId;
-    status: WithdrawalStatus;
-    amount: AssetAmount;
-  }>;
-```
-
-The HTTP adapter maps this to its response DTO.
-
-This prevents API representation requirements from shaping the domain aggregate.
-
----
-
-# 22. Type-safe alternative outcomes
-
-Use discriminated unions for legitimate alternate outcomes.
-
-Provider example:
-
-```ts
-export type ProviderExecutionResult =
-  | Readonly<{
-      kind: 'success';
-      transactionReference: string;
-    }>
-  | Readonly<{
-      kind: 'failure';
-      reason: ProviderFailureReason;
-    }>;
-```
-
-Do not use:
-
-```ts
-{
-  success: boolean;
-  transactionReference?: string;
-  reason?: string;
-}
-```
-
-because it allows invalid combinations.
-
----
-
-# 23. Idempotency result
-
-Recommended:
-
-```ts
-export type IdempotencyClaimResult =
-  | Readonly<{
-      kind: 'acquired';
-    }>
-  | Readonly<{
-      kind: 'replay';
-      result: RequestWithdrawalResult;
-    }>
-  | Readonly<{
-      kind: 'conflict';
-    }>;
-```
-
-Then handle exhaustively:
-
-```ts
-switch (claim.kind) {
-  case 'acquired':
-    break;
-
-  case 'replay':
-    return claim.result;
-
-  case 'conflict':
-    throw new IdempotencyKeyConflict();
-
-  default:
-    return assertNever(claim);
-}
-```
-
-This ensures future variants cannot silently be ignored.
-
----
-
-# 24. Error strategy
-
-Distinguish three categories.
-
-## Domain errors
-
-Examples:
-
-```text
-InsufficientAvailableBalance
-InvalidWithdrawalTransition
-InvalidReservationTransition
-```
-
-## Application errors
-
-Examples:
-
-```text
-IdempotencyKeyConflict
-WithdrawalNotFound
-InvalidExecutionMessage
-```
-
-## Infrastructure errors
-
-Examples:
-
-```text
-PostgreSQL unavailable
-provider timeout
-Kafka unavailable
-```
-
-Do not add HTTP status codes to domain/application errors.
-
-Controllers map errors to HTTP responses.
-
-Do not catch every infrastructure failure and convert it into a business failure.
-
----
-
-# 25. RequestWithdrawal dependencies
-
-The final use case should conceptually depend on:
-
-```text
-TransactionRunner
-
-RequestWithdrawalIdempotencyPort
-
-WalletReservationPort
-
-WithdrawalRepository
-
-OutboxWriter
-
-UniqueIdGenerator
-
-Clock
-```
-
-It should not depend on:
-
-```text
-WalletRepository
-
-WalletReservationRepository
-
-WalletAccount
-
-PostgreSQL
-
-ORM
-
-Redis
-
-Kafka
-
-TransactionHost
-
-HTTP Request
-```
-
----
-
-# 26. RequestWithdrawal transaction
-
-Required workflow:
+One transaction (`docs/TASK.md §3.1`, `§11`):
 
 ```text
 BEGIN
-
-1. claim Idempotency-Key
-
-2. if replay:
-       return previous logical result
-
-3. if same key + different fingerprint:
-       reject
-
-4. create WithdrawalId
-
-5. reserve Wallet funds
-
-6. create Withdrawal aggregate
-
-7. persist Withdrawal
-
-8. append WithdrawalExecutionRequested
-   to Outbox
-
-9. persist idempotency result
-
+  claim the Idempotency-Key
+    replay   -> return the stored result
+    conflict -> reject
+  reserve wallet funds        (locks the wallet row)
+  create and persist the Withdrawal
+  append WithdrawalExecutionRequested to the outbox
+  store the response for future replays
 COMMIT
 ```
 
-This directly implements the challenge requirements. fileciteturn0file0L119-L128
-
----
-
-# 27. RequestWithdrawal conceptual implementation
+### 5.1 Idempotency has three outcomes, and they are return values
 
 ```ts
-@Injectable()
-export class RequestWithdrawal {
-  constructor(
-    private readonly transactions:
-      TransactionRunner,
-
-    private readonly idempotency:
-      RequestWithdrawalIdempotencyPort,
-
-    private readonly wallet:
-      WalletReservationPort,
-
-    private readonly withdrawals:
-      WithdrawalRepository,
-
-    private readonly outbox:
-      OutboxWriter,
-
-    private readonly ids:
-      UniqueIdGenerator,
-
-    private readonly clock:
-      Clock,
-  ) {}
-
-  async execute(
-    command: RequestWithdrawalCommand,
-  ): Promise<RequestWithdrawalResult> {
-    return this.transactions.run(
-      async () => {
-        const claim =
-          await this.idempotency.claim({
-            key:
-              command.idempotencyKey,
-
-            fingerprint:
-              createRequestFingerprint(
-                command,
-              ),
-          });
-
-        switch (claim.kind) {
-          case 'replay':
-            return claim.result;
-
-          case 'conflict':
-            throw new IdempotencyKeyConflict();
-
-          case 'acquired':
-            break;
-
-          default:
-            return assertNever(claim);
-        }
-
-        const withdrawalId =
-          WithdrawalId.create(
-            this.ids.generate(),
-          );
-
-        const reservation =
-          await this.wallet.reserve({
-            withdrawalId,
-            userId: command.userId,
-            amount: command.amount,
-          });
-
-        const withdrawal =
-          Withdrawal.request({
-            id: withdrawalId,
-            userId: command.userId,
-            amount: command.amount,
-            destination:
-              command.destination,
-            reservationId:
-              reservation.reservationId,
-          });
-
-        await this.withdrawals.add(
-          withdrawal,
-        );
-
-        await this.outbox.append(
-          createWithdrawalExecutionRequested({
-            eventId:
-              this.ids.generate(),
-
-            withdrawal,
-
-            occurredAt:
-              this.clock.now(),
-          }),
-        );
-
-        const result =
-          toRequestWithdrawalResult(
-            withdrawal,
-          );
-
-        await this.idempotency.complete(
-          command.idempotencyKey,
-          result,
-        );
-
-        return result;
-      },
-    );
-  }
-}
+export type IdempotencyClaim =
+  | { kind: 'CLAIMED' }
+  | { kind: 'REPLAY'; result: RequestWithdrawalResult }
+  | { kind: 'CONFLICT' };
 ```
 
-Exact names should follow existing codebase conventions.
+The use case switches exhaustively and calls `assertNever` in the default
+branch, so adding a fourth outcome becomes a compile error rather than a
+silently ignored case.
 
----
+`CONFLICT` is a returned outcome rather than an adapter-thrown exception, and
+`IdempotencyKeyConflictError` is defined in the application layer. This matters:
+if the adapter threw its own error type, then whichever storage happened to
+detect the collision would define the API's 409 behaviour, and swapping that
+storage would silently change the contract. It also means the rejection path is
+unit-testable without a database.
 
-# 28. Request fingerprint
+### 5.2 Concurrency on the same key
 
-Fingerprint only semantic request data.
+The claim is `INSERT ... ON CONFLICT (operation, idempotency_key) DO NOTHING`
+followed, when the insert finds an existing row, by `SELECT ... FOR UPDATE`.
 
-Recommended:
+A concurrent duplicate blocks on the unique index until the first transaction
+resolves, then reads its committed outcome: one withdrawal, one replay
+(`docs/TASK.md §9`). The cost of that serialisation is that a duplicate holds a
+pooled connection while it waits — which is why lock waits are bounded (§11).
+
+Because the claim and the completion share one transaction, an abandoned claim
+rolls back with the workflow. Two consequences, both intended:
+
+- a request that fails on a business rule (insufficient balance) leaves no
+  record, so the key is reusable — the caller may legitimately retry with a
+  corrected amount;
+- `IN_PROGRESS` is never observable after commit. The column and its check
+  constraint still describe the intra-transaction state honestly, but any
+  *committed* record that is not `COMPLETED` is a data-integrity alarm, not a
+  business outcome, and the adapter raises `CorruptIdempotencyRecordError`
+  rather than mapping it to a 4xx.
+
+### 5.3 The fingerprint belongs to the workflow
+
+`createRequestFingerprint` lives in the application layer, not in the
+controller, and the command carries no `fingerprint` field for a caller to
+supply.
+
+The rule is workflow policy: every entry point must produce identical output
+for identical intent, and a driving adapter cannot be trusted to reproduce it.
+It is computed from *parsed* values, so `100`, `100.0` and `100.000000` collapse
+to one atomic amount and the destination is normalised by the same
+`WithdrawalAddress` value object the aggregate stores — closing a real trap,
+where fingerprinting a raw string before normalisation would let a future
+normalisation change turn one retry into two withdrawals.
+
+Fields are length-prefixed rather than delimiter-joined, because `userId` and
+the destination are caller-supplied and no separator is guaranteed absent from
+them. The result is a readable string rather than a digest, so a production
+conflict can be diagnosed by reading the row. Volatile data — correlation ids,
+timestamps, headers — is excluded by construction.
+
+## 6. ExecuteWithdrawal
+
+Kafka is only the transport. The workflow runs in three phases so that no
+database transaction is ever held across the provider call
+(`docs/TASK.md §3.2`, `§10`):
 
 ```text
-operation
-userId
-asset
-atomic amount
-normalized destination
-```
-
-Do not include:
-
-```text
-correlationId
-timestamp
-request arrival time
-unrelated HTTP headers
-```
-
-Equivalent requests must produce equivalent fingerprints.
-
-The challenge explicitly requires documenting payload fingerprinting and different-payload reuse behavior. fileciteturn0file0L382-L405
-
----
-
-# 29. WalletReservationPort
-
-Recommended:
-
-```ts
-export type ReserveWalletFunds =
-  Readonly<{
-    withdrawalId: WithdrawalId;
-    userId: UserId;
-    amount: AssetAmount;
-  }>;
-
-export type ReservedWalletFunds =
-  Readonly<{
-    reservationId: ReservationId;
-  }>;
-
-export abstract class WalletReservationPort {
-  abstract reserve(
-    request: ReserveWalletFunds,
-  ): Promise<ReservedWalletFunds>;
-}
-```
-
-The contract intentionally does not expose:
-
-```text
-WalletAccount
-WalletReservation aggregate
-repository
-locking
-transaction
-database row
-```
-
----
-
-# 30. Wallet ReserveFunds application operation
-
-Behind `WalletReservationPort`, Wallet application coordinates:
-
-```text
-obtain WalletAccount for protected mutation
-        |
-        v
-wallet.reserve(amount)
-        |
-        v
-create WalletReservation
-        |
-        v
-persist WalletAccount
-        |
-        v
-persist WalletReservation
-```
-
-This is a **transaction participant** when called from `RequestWithdrawal`.
-
-Do not start a second transaction.
-
----
-
-# 31. Repository contracts
-
-Repositories must reflect aggregate-specific semantics.
-
-Conceptually:
-
-```ts
-export abstract class WithdrawalRepository {
-  abstract add(
-    withdrawal: Withdrawal,
-  ): Promise<void>;
-
-  abstract getById(
-    id: WithdrawalId,
-  ): Promise<Withdrawal | null>;
-
-  abstract getForUpdate(
-    id: WithdrawalId,
-  ): Promise<Withdrawal | null>;
-
-  abstract save(
-    withdrawal: Withdrawal,
-  ): Promise<void>;
-}
-```
-
-Wallet and WalletReservation receive their own repositories because the approved Domain Layer models them as separate Aggregate Roots.
-
-Do not create `Repository<T>`.
-
----
-
-# 32. Concurrency semantics
-
-Application repository contracts may expose semantic mutation methods such as:
-
-```text
-getForUpdate
-```
-
-when a use case requires exclusive transactional mutation.
-
-This communicates:
-
-> obtain this aggregate for protected mutation.
-
-It must not expose PostgreSQL-specific APIs.
-
-Infrastructure may implement this with:
-
-```text
-SELECT ... FOR UPDATE
-```
-
-as required by the challenge's concurrency scenario. fileciteturn0file0L290-L333
-
----
-
-# 33. OutboxWriter
-
-Recommended technical contract:
-
-```ts
-export abstract class OutboxWriter {
-  abstract append(
-    event: IntegrationEvent,
-  ): Promise<void>;
-}
-```
-
-Promote it to a shared/platform abstraction only if multiple contexts genuinely share the same transactional Outbox semantics.
-
-Otherwise keep it owned by this BC/application boundary.
-
-Do not expose Kafka producer APIs through this port.
-
----
-
-# 34. Integration event
-
-Define an immutable, versioned contract.
-
-Conceptually:
-
-```ts
-export type WithdrawalExecutionRequestedV1 =
-  Readonly<{
-    eventId: EventId;
-
-    type:
-      'withdrawal.execution-requested.v1';
-
-    occurredAt: Instant;
-
-    withdrawalId: WithdrawalId;
-    userId: UserId;
-
-    asset: string;
-    amountAtomic: string;
-  }>;
-```
-
-Do not serialize an entire `Withdrawal` aggregate.
-
-Integration events are external contracts and should contain explicit serializable data.
-
-The task requires an execution event persisted via Outbox and later published to Kafka. fileciteturn0file0L130-L170
-
----
-
-# 35. ExecuteWithdrawal slice
-
-Kafka is only the inbound adapter.
-
-Flow:
-
-```text
-Kafka Consumer
-       |
-       v
-deserialize event
-       |
-       v
-ExecuteWithdrawalCommand
-       |
-       v
-ExecuteWithdrawal
-```
-
-The Kafka consumer must not contain:
-
-```text
-Withdrawal transition logic
-Wallet settlement logic
-provider decision logic
-Inbox business handling
-```
-
-These belong to the application/domain.
-
----
-
-# 36. ExecuteWithdrawal transaction strategy
-
-Do not hold a PostgreSQL transaction during the provider call.
-
-Use three phases.
-
-## Phase 1 — prepare execution
-
-Short transaction:
-
-```text
-BEGIN
-
-check execution state
-
-load/lock Withdrawal
-
-if PENDING:
-    startProcessing()
-
-if PROCESSING:
-    allow safe resume
-
-if terminal:
-    handle idempotently
-
-persist
-
+transaction 1   already processed? -> stop
+                lock the Withdrawal
+                PENDING -> PROCESSING (PROCESSING resumes)
+                terminal -> record the event and stop
+COMMIT
+
+                provider.execute(...)      <- no transaction held
+
+transaction 2   already processed? -> stop
+                lock the Withdrawal
+                SUCCESS -> complete + finalize the reservation
+                FAILED  -> fail + release the reservation
+                record the processed event
 COMMIT
 ```
 
-Return only the immutable data needed to call the provider.
+Settlement and the processed-event record commit together, which is what stops
+a duplicate delivery from settling twice (`docs/TASK.md §10`). The event is
+recorded only *after* the outcome is durable — never when work merely started.
 
----
+### 6.1 Provider rejection is not provider failure
 
-# 37. Phase 2 — provider call
+A `FAILED` result is a business outcome: the withdrawal fails and the
+reservation is released. A thrown error is *uncertainty* — the transfer may
+have happened — so the workflow raises
+`WithdrawalExecutionUnresolvedError`, leaves the Withdrawal `PROCESSING` and the
+reservation `ACTIVE`, and lets redelivery re-drive the provider.
 
-Outside PostgreSQL transaction:
+This is safe only because the provider is idempotent on `withdrawalId`. That is
+a hard architectural precondition, not an optimisation: a provider without an
+idempotency key, a lookup API, or a reconciliation process would make this
+design double-spend.
 
-```text
-WithdrawalProvider.execute(...)
-```
+### 6.2 Failures that cannot succeed must not block the partition
 
-Recommended provider input:
+`eachMessage` rethrowing forever parks a Kafka partition on one bad record and
+strands every other withdrawal behind it. The consumer therefore classifies:
 
-```ts
-export type ExecuteProviderWithdrawal =
-  Readonly<{
-    idempotencyKey: WithdrawalId;
-    amount: AssetAmount;
-    destination: WithdrawalAddress;
-  }>;
-```
+- **unparseable** (bad JSON, contract mismatch) → dead-letter immediately;
+- **non-retryable** (`WITHDRAWAL_NOT_FOUND`, illegal transitions, missing
+  wallet or reservation) → dead-letter immediately, no retry;
+- **anything else** → up to 5 attempts with linear backoff, then dead-letter.
 
-Use `WithdrawalId` as provider-side idempotency key when possible.
+Dead-lettering publishes the original message to `<topic>.dlq` with the reason
+and error code in headers, and commits the offset. If the dead-letter publish
+itself fails it is logged and swallowed — losing the parked copy must not
+resurrect the poison message, because the money is still recoverable by §7.
 
----
+## 7. RecoverStuckWithdrawals
 
-# 38. Provider result
+At-least-once delivery closes every crash window in §6 *while the message still
+exists*. Messages stop existing: retention expires, offsets get reset, or §6.2
+dead-letters one to unblock a partition. Nothing would then re-drive the
+withdrawal, and the caller's funds would stay reserved indefinitely.
 
-Use:
+A timer scans for withdrawals `PROCESSING` longer than the timeout (15 minutes
+by default) and appends a fresh `WithdrawalExecutionRequested` to the outbox for
+each, inside one transaction.
 
-```ts
-export type ProviderExecutionResult =
-  | Readonly<{
-      kind: 'success';
-      transactionReference: string;
-    }>
-  | Readonly<{
-      kind: 'failure';
-      reason: ProviderFailureReason;
-    }>;
-```
+The event id is deliberately new. Reusing the original would let
+`processed_events` suppress precisely the retry that is wanted. Safety comes
+from the two guards that already exist: `ExecuteWithdrawal` refuses to
+re-settle a terminal Withdrawal, and the provider is idempotent on
+`withdrawalId`.
 
-A provider-declared failure is a business execution result.
+Trade-off, accepted knowingly: a withdrawal that can never resolve is
+re-published every cycle. Bounding the attempts would need an attempt counter on
+the withdrawal; for a financial operation that must eventually resolve, an
+unbounded retry with a long interval and a loud log is the safer default.
 
-A timeout/network crash is a technical failure.
+## 8. GetWithdrawal
 
-Do not convert technical uncertainty into a final failed Withdrawal automatically.
+A read-only slice over a query port returning a `WithdrawalView`. It does not
+reconstitute the aggregate, and it does not open a transaction — lightweight
+CQRS without a CQRS framework. Infrastructure is free to answer it with
+optimised SQL.
 
----
+## 9. Wallet and Withdrawal collaborate through consumer-owned ports
 
-# 39. Phase 3 — settlement
-
-Short transaction:
-
-```text
-BEGIN
-
-check event is not already settled
-
-load/lock Withdrawal
-
-SUCCESS
-    WalletSettlementPort.finalize()
-    Withdrawal.complete()
-
-FAILURE
-    WalletSettlementPort.release()
-    Withdrawal.fail()
-
-record ProcessedEvent / Inbox
-
-COMMIT
-```
-
-Wallet settlement internally coordinates:
-
-```text
-WalletReservation
-+
-WalletAccount
-```
-
-in the same active transaction.
-
-The challenge explicitly requires duplicate Kafka messages not to settle balances twice. fileciteturn0file0L406-L433
-
----
-
-# 40. WalletSettlementPort
-
-Recommended:
+Withdrawal owns the contracts it needs and never imports wallet code
+(`docs/TASK.md §4.1`):
 
 ```ts
-export abstract class WalletSettlementPort {
-  abstract finalize(
-    reservationId: ReservationId,
-  ): Promise<void>;
+interface WalletReservationPort {
+  reserve(input: { withdrawalId: string; userId: string; amount: Money }):
+    Promise<{ reservationId: string }>;
+}
 
-  abstract release(
-    reservationId: ReservationId,
-  ): Promise<void>;
+interface WalletSettlementPort {
+  finalize(reservationId: string): Promise<void>;
+  release(reservationId: string): Promise<void>;
 }
 ```
 
-The adapter behind this port owns Wallet-specific orchestration.
+Two narrow capabilities rather than one `WalletPort`, adapted at the composition
+root to the wallet use cases. Neither port exposes an aggregate, a repository,
+a lock, or a row.
 
-Withdrawal application does not need to know how WalletAccount and WalletReservation interact internally.
+This is enforced, not merely documented: every project carries `type:` and
+`scope:` tags and `@nx/enforce-module-boundaries` rejects a withdrawal → wallet
+import at lint time.
 
----
+Note that `reserve` takes `Money` and no separate `Asset`. `Money` carries its
+own asset, so a command whose asset disagrees with its amount cannot be
+represented, and the wallet that gets locked cannot differ from the money that
+gets reserved.
 
-# 41. Inbox / ProcessedEvent
+## 10. Errors
 
-Prefer an existing platform Inbox abstraction if one already exists.
+| Kind | Examples | Owner |
+| --- | --- | --- |
+| Domain | `InsufficientAvailableBalanceError`, `InvalidWithdrawalTransitionError` | aggregate |
+| Application | `IdempotencyKeyConflictError`, `WithdrawalNotFoundError`, `WithdrawalExecutionUnresolvedError` | use case |
+| Infrastructure | `MissingTransactionError`, `CorruptIdempotencyRecordError`, driver failures | adapter |
 
-Otherwise introduce only the capability needed by this slice.
+No error carries an HTTP status. `ApiExceptionFilter` maps a stable `code` to a
+status at the edge, and anything unmapped is a 500 with a generic message.
+Infrastructure failures are not converted into business outcomes.
 
-Conceptually:
+## 11. Concurrency and lock bounds
 
-```ts
-export abstract class ExecutionInboxPort {
-  abstract isProcessed(
-    eventId: EventId,
-  ): Promise<boolean>;
+Wallet mutation locks the row with `SELECT ... FOR UPDATE`
+(`docs/TASK.md §6`); the reservation is a separately locked aggregate.
 
-  abstract markProcessed(
-    eventId: EventId,
-  ): Promise<void>;
-}
+Every transaction sets `lock_timeout` (3s) and `statement_timeout` (10s) via
+transaction-local `set_config`. Without a bound, a burst of duplicates on one
+key parks pooled connections indefinitely, and since the HTTP path, the outbox
+publisher, the recovery worker and the read model share one bounded pool, that
+starves event delivery. Failing a request beats stalling the pipeline.
+
+## 12. Deliberately outside this layer
+
+- **Rate limiting** stays in the HTTP adapter. It protects the endpoint, not
+  the invariant, and it fails open — including at startup, where the Redis
+  connection is deliberately not awaited, so an outage cannot stop the service
+  from accepting withdrawals (`docs/TASK.md §8`).
+- **Schema migration** is infrastructure, applied at startup before any module
+  queries. The application layer never sees it.
+- **Authorization and ownership.** `userId` arrives in the request body and
+  `GET /withdrawals/{id}` is unscoped. Authentication is out of scope
+  (`docs/TASK.md §20`), but the check belongs in the application layer as a
+  workflow prerequisite, not in the controller. This is an omission, not a
+  design position.
+
+## 13. Testing
+
+Application tests instantiate use cases directly with hand-written doubles: no
+Nest container, no database, no Kafka. What genuinely needs a database is tested
+against a real one and never mocked (`docs/TASK.md §14`).
+
+| Slice | Covered |
+| --- | --- |
+| `RequestWithdrawal` | orchestration and ordering, derived fingerprint, replay, key conflict, wallet rejection propagation, one transaction |
+| `createRequestFingerprint` | formatting-insensitivity, key-independence, per-field separation, field-boundary spoofing |
+| `ExecuteWithdrawal` | success, declared failure, unresolved provider call, duplicate event |
+| `RecoverStuckWithdrawals` | re-publish, timeout threshold, fresh event ids, empty scan |
+| consumer | parse failure, contract mismatch, retry-then-succeed, retries exhausted, non-retryable |
+| composition | every use case resolves, providers are singletons, one shared transaction runner, controller receives use cases |
+| PostgreSQL (opt-in) | concurrent 80+80 from 100, concurrent same key, key reuse with a different payload, finalize-once, release-on-failure, recovery re-publish |
+
+## 14. Definition of done
+
+Each of these is a command, not a judgement call:
+
+```bash
+pnpm nx run-many -t build lint typecheck   # boundaries, types, strictness
+pnpm nx run-many -t test --runInBand       # unit + slice tests
+
+docker compose up -d postgres
+TEST_DATABASE_URL=postgresql://pooleno:pooleno@localhost:55433/pooleno_test \
+  pnpm nx run api:test --runInBand         # real concurrency and transactions
 ```
 
-The persistence implementation must additionally enforce unique `eventId`.
-
-Do not mark the event processed before external execution.
-
-`ProcessedEvent` means:
-
-```text
-the execution outcome was safely settled
-```
-
-not:
-
-```text
-a worker started processing the message
-```
-
----
-
-# 42. PROCESSING retries
-
-Kafka redelivery may encounter:
-
-```text
-Withdrawal = PROCESSING
-```
-
-This must be resumable.
-
-A previous worker may have crashed:
-
-```text
-after PROCESSING commit
-before provider call
-```
-
-or:
-
-```text
-after provider success
-before local settlement
-```
-
-Therefore do not simply discard PROCESSING messages.
-
-Provider idempotency makes retrying the external call safe.
-
-For the fake provider, repeated execution using the same Withdrawal ID should return the same logical result/reference.
-
----
-
-# 43. GetWithdrawal slice
-
-Queries should not automatically reconstitute the aggregate.
-
-Use a query-specific driven port:
-
-```ts
-export abstract class WithdrawalQueryPort {
-  abstract findById(
-    id: WithdrawalId,
-  ): Promise<WithdrawalView | null>;
-}
-```
-
-Application view:
-
-```ts
-export type WithdrawalView =
-  Readonly<{
-    withdrawalId: WithdrawalId;
-    status: WithdrawalStatus;
-    amount: AssetAmount;
-    transactionReference:
-      string | null;
-    createdAt: Instant;
-  }>;
-```
-
-Infrastructure may implement optimized SQL directly.
-
-This is lightweight CQRS without requiring a CQRS framework.
-
----
-
-# 44. Do not introduce Nest CQRS automatically
-
-Do not add:
-
-```text
-CommandBus
-QueryBus
-EventBus
-CommandHandler
-QueryHandler
-```
-
-solely to say the project uses CQRS or Vertical Slices.
-
-Direct use-case invocation is clearer for this challenge:
-
-```ts
-requestWithdrawal.execute(...)
-```
-
-If the existing project already standardizes `@nestjs/cqrs`, follow the existing convention rather than introducing a second application style.
-
----
-
-# 45. Saga decision
-
-Do not use Saga for RequestWithdrawal.
-
-Current architecture:
-
-```text
-Wallet
-WalletReservation
-Withdrawal
-Outbox
-
-same PostgreSQL transaction capability
-```
-
-The task explicitly requires strong atomicity during withdrawal creation. fileciteturn0file0L119-L128
-
-Saga becomes appropriate only if Wallet and Withdrawal later have independent transactional stores.
-
-At that point the model must change to eventual consistency and additional intermediate states.
-
-Do not add Saga abstractions now.
-
----
-
-# 46. Modern TypeScript rules
-
-Prefer strong compiler settings where compatible with the codebase.
-
-Recommended:
-
-```text
-strict
-exactOptionalPropertyTypes
-noUncheckedIndexedAccess
-noImplicitReturns
-noFallthroughCasesInSwitch
-noImplicitOverride
-```
-
-Do not force a project-wide migration if enabling one option creates large unrelated changes.
-
-For new application code, follow the same discipline regardless.
-
----
-
-# 47. Type-safety practices
-
-Prefer:
-
-```text
-readonly commands
-readonly results
-readonly events
-readonly port messages
-```
-
-Use:
-
-```text
-unknown
-```
-
-rather than:
-
-```text
-any
-```
-
-at uncertain boundaries.
-
-Use:
-
-```text
-discriminated unions
-```
-
-instead of several optional fields representing a state machine.
-
-Use:
-
-```text
-satisfies
-```
-
-for configuration/event/provider maps where it preserves inference while verifying structure.
-
-Use:
-
-```text
-import type
-```
-
-for compile-time-only dependencies where consistent with project tooling.
-
----
-
-# 48. No generic Result abstraction unless already established
-
-Do not introduce:
-
-```text
-Result<T, E>
-Either<E, T>
-```
-
-across the codebase solely for this task.
-
-Use:
-
-```text
-typed domain/application errors
-```
-
-for exceptional/rejected operations.
-
-Use:
-
-```text
-discriminated unions
-```
-
-for expected alternate protocol outcomes such as:
-
-```text
-provider success/failure
-
-idempotency acquired/replay/conflict
-```
-
-If the existing codebase already has a well-established Result abstraction, use it consistently.
-
----
-
-# 49. Application logging
-
-Reuse an existing platform logging/telemetry abstraction if available.
-
-Useful fields include those requested by the challenge:
-
-```text
-correlationId
-withdrawalId
-userId
-eventId
-operation
-result
-errorCode
-```
-
-fileciteturn0file0L583-L617
-
-Do not inject logging concerns into domain objects.
-
-Request/correlation context may be propagated using platform CLS infrastructure.
-
----
-
-# 50. Nest composition
-
-Prefer straightforward Nest provider registration.
-
-For an abstract-class port:
-
-```ts
-{
-  provide: WalletReservationPort,
-  useClass: WalletReservationAdapter,
-}
-```
-
-Use cases can generally be ordinary Nest providers:
-
-```ts
-@Injectable()
-export class RequestWithdrawal {}
-```
-
-This provides good Nest ergonomics without forcing infrastructure concerns into the application design.
-
-Do not use request-scoped use cases merely to propagate transactions or correlation context.
-
----
-
-# 51. Application unit tests
-
-Application unit tests should not require:
-
-```text
-Nest testing module
-PostgreSQL
-Redis
-Kafka
-CLS
-```
-
-Instantiate use cases directly with focused test doubles.
-
-Example:
-
-```ts
-const useCase =
-  new RequestWithdrawal(
-    transactions,
-    idempotency,
-    wallet,
-    withdrawals,
-    outbox,
-    ids,
-    clock,
-  );
-```
-
-Nest module wiring should have separate composition/integration tests.
-
----
-
-# 52. RequestWithdrawal test matrix
-
-Test:
-
-```text
-successful orchestration
-
-idempotency acquired
-
-idempotency replay
-    returns previous result
-    does not reserve again
-
-idempotency conflict
-    rejects
-    does not reserve
-
-wallet domain failure propagates
-
-Withdrawal created after reservation
-
-Withdrawal persisted
-
-Outbox appended
-
-idempotency completed
-
-TransactionRunner invoked exactly once
-
-same semantic command creates correct fingerprint
-```
-
-Database rollback itself must be tested later against PostgreSQL, not only with mocks.
-
----
-
-# 53. ExecuteWithdrawal test matrix
-
-Test:
-
-```text
-PENDING -> PROCESSING
-
-PROCESSING can resume
-
-terminal Withdrawal handled idempotently
-
-provider receives WithdrawalId
-as idempotency key
-
-provider success
-    Wallet finalized
-    Withdrawal completed
-
-provider declared failure
-    Wallet released
-    Withdrawal failed
-
-provider technical exception
-    no final settlement occurs
-
-processed event marked only
-after successful settlement
-
-duplicate processed message
-does not settle twice
-```
-
----
-
-# 54. Query tests
-
-Test:
-
-```text
-existing Withdrawal returned
-
-missing Withdrawal handled
-
-query port invoked correctly
-
-no domain mutation
-
-no unnecessary transaction
-```
-
----
-
-# 55. Nest composition tests
-
-Verify:
-
-```text
-use cases resolve from Nest
-
-abstract-class ports map
-to intended adapters
-
-TransactionRunner maps
-to CLS implementation
-
-WalletReservationPort maps
-to Wallet adapter
-
-WithdrawalProvider maps
-to fake provider
-
-OutboxWriter maps
-to persistence adapter
-
-application providers remain singleton
-unless explicitly justified
-
-module exports only intended
-public application APIs
-```
-
----
-
-# 56. Application implementation sequence
-
-## Step 1 — inspect existing application/platform abstractions
-
-Identify existing:
-
-```text
-transaction abstraction
-Clock
-ID generation
-Outbox
-Inbox
-logging
-Nest DI conventions
-application errors
-command/query conventions
-```
-
-Reuse semantically correct abstractions.
-
-Do not build competing infrastructure abstractions.
-
-## Step 2 — define vertical slices
-
-Establish:
-
-```text
-RequestWithdrawal
-ExecuteWithdrawal
-GetWithdrawal
-```
-
-and Wallet capabilities needed by them.
-
-## Step 3 — define immutable inputs/results
-
-Use semantic domain/application types.
-
-Do not use HTTP DTOs.
-
-## Step 4 — define required ports only
-
-Start with actual current dependencies.
-
-Do not create future hypothetical ports.
-
-## Step 5 — implement RequestWithdrawal
-
-Use test doubles first.
-
-No database or Nest container required.
-
-## Step 6 — implement Wallet application operations
-
-Implement:
-
-```text
-ReserveFunds
-FinalizeReservation
-ReleaseReservation
-```
-
-against Wallet domain/repository ports.
-
-They participate in outer transactions.
-
-## Step 7 — define integration event
-
-Define and version:
-
-```text
-WithdrawalExecutionRequested
-```
-
-independently from Kafka implementation.
-
-## Step 8 — implement ExecuteWithdrawal
-
-Use:
-
-```text
-prepare transaction
-provider call outside transaction
-settlement transaction
-```
-
-with resumable/idempotent semantics.
-
-## Step 9 — implement GetWithdrawal
-
-Use an optimized query port.
-
-## Step 10 — integrate NestJS
-
-Register use cases and abstract-class ports using existing Nest module conventions.
-
-## Step 11 — connect TransactionRunner to CLS infrastructure
-
-Keep CLS entirely outside application behavior.
-
-## Step 12 — verify boundaries
-
-Confirm:
-
-```text
-no ORM leakage
-
-no transaction object leakage
-
-no Wallet repository access
-from Withdrawal application
-
-no long transactions
-around provider calls
-
-no unnecessary generic abstractions
-```
-
----
-
-# 57. Application code-review checklist
-
-For every use case verify:
-
-### Cohesion
-
-```text
-Can the business workflow be understood
-from this slice?
-```
-
-### Domain ownership
-
-```text
-Is application code making a business
-decision that belongs to an aggregate?
-```
-
-If yes, move it.
-
-### Transaction ownership
-
-```text
-Who starts the transaction?
-```
-
-There must be one clear answer.
-
-### Port semantics
-
-```text
-Does this port describe a capability,
-not a technology?
-```
-
-### Port width
-
-```text
-Does the consumer receive only what
-it needs?
-```
-
-### Cross-module dependencies
-
-Reject direct imports of another module's repositories.
-
-### Type safety
-
-Check:
-
-```text
-no any
-no ambiguous optional-field state machine
-exhaustive union handling
-immutable commands/results
-```
-
-### Infrastructure leakage
-
-Reject:
-
-```text
-ORM
-Postgres
-Redis
-Kafka clients
-TransactionHost
-CLS
-HTTP
-```
-
-from core application behavior.
-
-### External IO
-
-Never hold a DB transaction while waiting for the provider.
-
-### Abstraction quality
-
-Remove interfaces/classes that only rename another abstraction.
-
----
-
-# 58. Definition of done
-
-The Application Layer is complete when:
-
-```text
-✓ application behavior is organized around vertical slices
-
-✓ Hexagonal driving/driven boundaries are explicit
-
-✓ RequestWithdrawal is a clear inbound use case
-
-✓ ExecuteWithdrawal is a clear inbound use case
-
-✓ GetWithdrawal is a clear inbound use case
-
-✓ cross-module interaction occurs through
-  narrow capability ports
-
-✓ RequestWithdrawal never accesses
-  WalletRepository directly
-
-✓ approved three-aggregate domain model
-  is respected
-
-✓ transaction ownership is explicit
-
-✓ nested operations participate in
-  the current transaction
-
-✓ no transaction objects appear
-  in application APIs
-
-✓ CLS is not referenced by application code
-
-✓ ORM and PostgreSQL types do not appear
-  in application contracts
-
-✓ Kafka and Redis clients do not appear
-  in application contracts
-
-✓ provider SDK types do not appear
-  in application contracts
-
-✓ NestJS DI remains ergonomic
-
-✓ abstract classes are used consistently
-  for Nest-managed ports
-
-✓ use cases remain concrete classes
-
-✓ no generic Repository<T> exists
-
-✓ no generic UseCase<I,O> exists
-  without genuine value
-
-✓ commands and results are immutable
-
-✓ provider outcomes are modeled
-  with discriminated unions
-
-✓ idempotency outcomes are exhaustive
-
-✓ RequestWithdrawal performs all
-  required writes atomically
-
-✓ provider execution happens outside
-  long DB transactions
-
-✓ Kafka redelivery is resumable
-
-✓ final settlement and ProcessedEvent
-  recording are atomic
-
-✓ query use cases may use optimized
-  read projections
-
-✓ application unit tests do not
-  require NestJS
-
-✓ Nest composition is tested separately
-
-✓ existing platform abstractions are reused
-  where their semantics genuinely match
-
-✓ no unnecessary codebase restructuring
-  is introduced
-```
-
----
-
-# Final application model
-
-```text
-                      DRIVING SIDE
-
-              HTTP                 Kafka
-               |                     |
-               v                     v
-
-       RequestWithdrawal       ExecuteWithdrawal
-               |                     |
-               |                     |
-        APPLICATION CORE             |
-               |                     |
-     +---------+---------+           |
-     |         |         |           |
-     v         v         v           v
- Transaction Wallet   Withdrawal   Provider
-   Runner     Port       Repo        Port
-               |
-               v
-          Wallet Module
-               |
-               v
-             Domain
-
-
-                 GetWithdrawal
-                       |
-                       v
-             WithdrawalQueryPort
-                       |
-                       v
-                  Read Adapter
-
-
-                    DRIVEN SIDE
-
- PostgreSQL / Wallet adapter / Outbox / Provider
-```
-
-The governing architectural rule is:
-
-> **Vertical Slices define how application behavior is organized. Hexagonal Architecture defines how dependencies cross boundaries. DDD determines where business rules live. NestJS provides composition and runtime DI without becoming the architecture itself.**
-
-Use the existing project structure, module conventions, and platform libraries. The plan defines ownership, dependency direction, contracts, and behavior; it does not require reorganizing the codebase into a prescribed directory layout.
+`lint` enforces the dependency direction and module isolation of §9, and
+`composition.spec.ts` compiles the real container so a wiring mistake fails a
+test rather than a deployment.
+`typecheck` runs under `strict` plus `noUncheckedIndexedAccess`,
+`noImplicitReturns`, `noImplicitOverride` and `noFallthroughCasesInSwitch`, so
+an unhandled union member or an unchecked row access fails the build.
+
+Note that `tsc --build` is incremental: a stale `.tsbuildinfo` can mask errors
+after a compiler-option change. Use `--force` when changing `tsconfig.base.json`.
+
+## 15. What I would change next
+
+- **Ownership checks** (§12) are the largest correctness gap that is not a
+  challenge constraint.
+- **Outbox growth**: published rows are never pruned.
+- **Recovery attempt limits** (§7) once there is somewhere to record them.
+- **Dead-letter reprocessing**: a parked message currently needs an operator;
+  the withdrawal itself recovers, the audit trail does not.
+- **Separate pools** for the publisher and the request path, so the two cannot
+  contend at all (§11 bounds the damage rather than removing it).

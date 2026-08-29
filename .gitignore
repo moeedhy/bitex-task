@@ -47,3 +47,4 @@ Thumbs.db
 .nx/polygraph
 vitest.config.*.timestamp*
 test-output
+graphify-out

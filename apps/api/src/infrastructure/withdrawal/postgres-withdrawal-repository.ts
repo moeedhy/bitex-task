@@ -8,7 +8,7 @@ import type {
   WithdrawalRepository,
   WithdrawalSnapshot,
 } from '@bitex/withdrawal';
-import type { PostgresTransactionRunner } from './postgres-transaction-runner.js';
+import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
 
 interface WithdrawalRow {
   id: string;
@@ -51,7 +51,8 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
         `SELECT ${columns} FROM withdrawals WHERE id = $1`,
         [id],
       );
-    return result.rowCount === 1 ? this.hydrate(result.rows[0]) : null;
+    const row = result.rows[0];
+    return row ? this.hydrate(row) : null;
   }
 
   async getForUpdate(id: string): Promise<Withdrawal> {
@@ -61,10 +62,11 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
         `SELECT ${columns} FROM withdrawals WHERE id = $1 FOR UPDATE`,
         [id],
       );
-    if (result.rowCount !== 1) {
+    const row = result.rows[0];
+    if (!row) {
       throw new WithdrawalNotFoundError(id);
     }
-    return this.hydrate(result.rows[0]);
+    return this.hydrate(row);
   }
 
   async save(withdrawal: Withdrawal): Promise<void> {

@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
@@ -8,15 +7,22 @@ import {
   ReleaseReservation,
   ReserveFunds,
 } from '@bitex/wallet';
-import { ExecuteWithdrawal, RequestWithdrawal } from '@bitex/withdrawal';
-import { PostgresTransactionRunner } from './postgres-transaction-runner.js';
-import { PostgresWalletRepository } from './postgres-wallet-repository.js';
-import { PostgresWalletReservationRepository } from './postgres-wallet-reservation-repository.js';
+import {
+  ExecuteWithdrawal,
+  IdempotencyKeyConflictError,
+  RecoverStuckWithdrawals,
+  RequestWithdrawal,
+} from '@bitex/withdrawal';
+import { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import { SchemaMigrator } from '../shared/schema-migrator.js';
+import { PostgresWalletRepository } from '../wallet/postgres-wallet-repository.js';
+import { PostgresWalletReservationRepository } from '../wallet/postgres-wallet-reservation-repository.js';
 import { PostgresWithdrawalRepository } from './postgres-withdrawal-repository.js';
 import { PostgresWithdrawalIdempotency } from './postgres-idempotency.js';
-import { PostgresOutbox } from './postgres-outbox.js';
+import { PostgresOutbox } from '../shared/postgres-outbox.js';
 import { PostgresProcessedEvents } from './postgres-processed-events.js';
-import { PostgresFakeWithdrawalProvider } from '../provider/postgres-fake-withdrawal-provider.js';
+import { PostgresStuckWithdrawalQuery } from './postgres-stuck-withdrawal-query.js';
+import { PostgresFakeWithdrawalProvider } from './postgres-fake-withdrawal-provider.js';
 
 const describePostgres = process.env.TEST_DATABASE_URL
   ? describe
@@ -34,23 +40,13 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     const database = await pool.query<{ current_database: string }>(
       'SELECT current_database()',
     );
-    if (!database.rows[0].current_database.endsWith('_test')) {
+    if (!database.rows[0]?.current_database.endsWith('_test')) {
       throw new Error('Integration tests require a dedicated *_test database.');
     }
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
-    const migrationPaths = [
-      join(
-        process.cwd(),
-        'src/infrastructure/database/migrations/001_initial.sql',
-      ),
-      join(
-        process.cwd(),
-        'src/infrastructure/database/migrations/002_domain_aggregate_refactor.sql',
-      ),
-    ];
-    for (const migrationPath of migrationPaths) {
-      await pool.query(await readFile(migrationPath, 'utf8'));
-    }
+    await new SchemaMigrator(
+      join(process.cwd(), 'src/infrastructure/database/migrations'),
+    ).run(pool);
   });
 
   beforeEach(async () => {
@@ -91,9 +87,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     const execute = (key: string) =>
       useCase.execute({
         idempotencyKey: key,
-        fingerprint: key,
         userId: 'user-123',
-        asset: Assets.USDT,
         amount: Money.parse('80', Assets.USDT),
         destinationAddress: 'TXYZ123456789',
       });
@@ -125,9 +119,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
   it('coalesces concurrent identical idempotent requests into one logical result', async () => {
     const command = {
       idempotencyKey: 'same-key',
-      fingerprint: 'same-fingerprint',
       userId: 'user-123',
-      asset: Assets.USDT,
       amount: Money.parse('10', Assets.USDT),
       destinationAddress: 'TXYZ123456789',
     };
@@ -192,12 +184,60 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     });
   });
 
+  it('rejects a key reused with a different payload and keeps the original', async () => {
+    const original = await request('reused-key', '10');
+
+    await expect(request('reused-key', '20')).rejects.toThrow(
+      IdempotencyKeyConflictError,
+    );
+
+    await expect(
+      pool.query('SELECT id FROM withdrawals'),
+    ).resolves.toMatchObject({ rowCount: 1 });
+    await expect(
+      pool.query('SELECT reserved_atomic FROM wallets WHERE id = $1', [
+        'wallet-1',
+      ]),
+    ).resolves.toMatchObject({ rows: [{ reserved_atomic: '10000000' }] });
+    await expect(request('reused-key', '10')).resolves.toEqual(original);
+  });
+
+  it('re-publishes execution intent for a withdrawal stranded in PROCESSING', async () => {
+    const requested = await request('stuck-key', '30');
+    await pool.query(
+      `UPDATE withdrawals
+       SET status = 'PROCESSING', updated_at = now() - interval '1 hour'
+       WHERE id = $1`,
+      [requested.withdrawalId],
+    );
+
+    const recovered = await new RecoverStuckWithdrawals({
+      transactionRunner: transaction,
+      stuckWithdrawals: new PostgresStuckWithdrawalQuery(transaction),
+      outbox: new PostgresOutbox(transaction),
+      eventIdGenerator: { next: randomUUID },
+      clock: { now: () => new Date() },
+      processingTimeoutMs: 15 * 60 * 1000,
+      batchSize: 50,
+    }).execute();
+
+    expect(recovered.rescheduled).toEqual([requested.withdrawalId]);
+    const events = await pool.query(
+      'SELECT id, payload FROM outbox_events WHERE aggregate_id = $1',
+      [requested.withdrawalId],
+    );
+    expect(events.rowCount).toBe(2);
+    expect(new Set(events.rows.map((row) => row.id)).size).toBe(2);
+    expect(events.rows[1].payload).toMatchObject({
+      withdrawalId: requested.withdrawalId,
+      amount: '30',
+    });
+  });
+
   function request(idempotencyKey: string, amount: string) {
     return useCase.execute({
       idempotencyKey,
-      fingerprint: `${idempotencyKey}-${amount}`,
       userId: 'user-123',
-      asset: Assets.USDT,
       amount: Money.parse(amount, Assets.USDT),
       destinationAddress: 'TXYZ123456789',
     });

@@ -53,3 +53,49 @@ A signed type lets `availableBalance` be a plain `balance - reserved` with no sp
 `ExecuteWithdrawal` therefore wraps that throw in `WithdrawalExecutionUnresolvedError` and leaves the Withdrawal `PROCESSING` and the reservation `ACTIVE`. Kafka redelivery re-drives the idempotent provider, which is safe; releasing the reservation on an ambiguous timeout would not be, because it frees funds that may already be gone.
 
 The residual gap is a Withdrawal stranded in `PROCESSING` once redelivery is exhausted. That needs a reconciliation sweep over stale `PROCESSING` rows plus a provider status lookup, which is follow-up work rather than something the aggregates can decide.
+
+## 11. Idempotency outcomes are return values, not adapter exceptions
+
+`WithdrawalIdempotencyPort.claim` returns `CLAIMED | REPLAY | CONFLICT` and the use case handles it exhaustively. If the adapter threw its own error type instead, whichever storage detected the collision would define the API's 409 behaviour and swapping it would silently change the contract. The conflict path is also unit-testable without a database.
+
+Because claim and completion share one transaction, an abandoned claim rolls back: a request rejected on a business rule leaves the key reusable, and a committed record is always `COMPLETED`. A committed record that is not is treated as a data-integrity alarm rather than a business outcome.
+
+## 12. Request fingerprinting is application policy
+
+The fingerprint is computed inside `RequestWithdrawal` from parsed values, not supplied by the caller. Any second driving adapter then stays compatible by construction, and normalising the destination through `WithdrawalAddress` before fingerprinting prevents a future normalisation change from turning one retry into two withdrawals. Fields are length-prefixed so caller-supplied content cannot forge a field boundary.
+
+## 13. Poison messages are dead-lettered, not retried forever
+
+Rethrowing from `eachMessage` parks a Kafka partition on one bad record and strands every other withdrawal behind it. Unparseable and non-retryable failures go straight to `<topic>.dlq`; everything else is retried with backoff and then dead-lettered. Availability of the pipeline is preferred over infinite retry of a message that cannot succeed.
+
+## 14. Stranded withdrawals are recovered by re-publishing intent
+
+At-least-once delivery only recovers crashes while the message still exists. `RecoverStuckWithdrawals` re-publishes execution intent for withdrawals left `PROCESSING` past a timeout, using a fresh event id so consumer deduplication cannot suppress the retry. Safety comes from the terminal-state check and provider idempotency rather than from deduplication. A withdrawal that can never resolve is retried indefinitely; bounding that needs an attempt counter, and stalling a financial operation silently is worse.
+
+## 15. Bounded lock waits
+
+Transactions set `lock_timeout` and `statement_timeout` locally. Duplicate requests on one key serialise on the idempotency row while holding a pooled connection, and the pool is shared with the outbox publisher and recovery worker, so failing a contended request is preferable to starving event delivery.
+
+## 16. Module boundaries are enforced, not documented
+
+Projects carry `type:` and `scope:` tags and `@nx/enforce-module-boundaries` encodes the dependency rules. A withdrawal-to-wallet import fails `lint`, which turns the architecture's central constraint from a review comment into a build error.
+
+## 17. Nest modules mirror the bounded contexts
+
+Composition lives in `WalletModule`, `WithdrawalModule`, `PersistenceModule`, `RedisModule` and `MessagingModule` rather than in one runtime object that the controller reads through. The controller now receives `RequestWithdrawal` and `GetWithdrawal` by constructor injection and can reach nothing else.
+
+Providers are registered with `useFactory` against class tokens. Ports stay plain TypeScript interfaces resolved inside the factories, which keeps NestJS out of `libs/*` entirely while still giving the container a real dependency graph — one that `composition.spec.ts` compiles on every test run, so a wiring mistake fails a test instead of a deployment.
+
+## 18. The integration event carries only what the consumer needs
+
+The event no longer includes the destination address. `ExecuteWithdrawal` loads the withdrawal by id and reads the address from the aggregate, so publishing it put a destination on a Kafka topic that nothing consumed. Events are external contracts and should carry the minimum that makes them actionable.
+
+## 19. The application owns schema migrations
+
+`docker-entrypoint-initdb.d` runs once, when the data directory is empty. Relying on it meant a developer or environment with an existing volume silently kept an older schema — migration 002 had in fact never been applied to the local `pooleno` database, which returned `42703 undefined_column` on every withdrawal while the test database (dropped and recreated per run) passed.
+
+`SchemaMigrator` applies pending files at startup under an advisory lock and records them in `schema_migrations`, so fresh and long-lived databases converge on the same schema. Seeding moved to the same place behind `SEED_DEV_DATA`, since the tables no longer exist at entrypoint time.
+
+## 20. Redis connects without blocking startup
+
+`await client.connect()` retried indefinitely inside `onModuleInit`, so a Redis outage prevented the service from ever listening — turning an optimisation into a hard startup dependency and breaking the fail-open guarantee exactly when it mattered. The connection is now started without being awaited; requests before it settles are simply not rate limited.

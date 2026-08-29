@@ -5,7 +5,7 @@ import type {
   ExecutionRequest,
   ExecutionResult,
   WithdrawalProvider,
-} from '../ports/withdrawal.provider.js';
+} from './withdrawal.provider.js';
 
 export interface ProcessedEventPort {
   has(eventId: string): Promise<boolean>;
@@ -22,7 +22,7 @@ export interface ExecuteWithdrawalDependencies {
   withdrawals: WithdrawalRepository;
   processedEvents: ProcessedEventPort;
   walletSettlement: WalletSettlementPort;
-  provider: Pick<WithdrawalProvider, 'execute'>;
+  provider: WithdrawalProvider;
   clock: Clock;
 }
 

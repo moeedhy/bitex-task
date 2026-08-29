@@ -12,6 +12,26 @@ export class WithdrawalNotFoundError extends Error {
 }
 
 /**
+ * The Idempotency-Key was already used for a request with different semantic
+ * content. Replaying it would return a result describing a different
+ * withdrawal, so the workflow refuses instead.
+ *
+ * The contract lives here rather than in a persistence adapter: which storage
+ * detects the collision is an implementation choice, but the fact that a
+ * collision rejects the request is application behaviour.
+ */
+export class IdempotencyKeyConflictError extends Error {
+  readonly code = 'IDEMPOTENCY_CONFLICT' as const;
+
+  constructor(readonly idempotencyKey: string) {
+    super(
+      `Idempotency-Key "${idempotencyKey}" was already used with a different request payload.`,
+    );
+    this.name = 'IdempotencyKeyConflictError';
+  }
+}
+
+/**
  * The provider call neither succeeded nor returned a rejection, so the transfer
  * may or may not have happened. The Withdrawal deliberately stays PROCESSING
  * and the reservation stays ACTIVE; redelivery re-drives the idempotent

@@ -1,5 +1,5 @@
+import { assertNever } from '@bitex/platform';
 import type {
-  Asset,
   Clock,
   IdGenerator,
   Money,
@@ -7,20 +7,26 @@ import type {
   TransactionRunner,
 } from '@bitex/platform';
 import { Withdrawal } from '../../domain/withdrawal.js';
+import type { WithdrawalStatus } from '../../domain/withdrawal.js';
+import { IdempotencyKeyConflictError } from '../withdrawal.errors.js';
 import type { WithdrawalRepository } from '../ports/withdrawal.repository.js';
+import { createRequestFingerprint } from './request-fingerprint.js';
 
+/**
+ * `amount` carries its own `Asset`, so the command deliberately has no separate
+ * asset field: a command whose asset disagrees with its amount cannot be
+ * represented.
+ */
 export interface RequestWithdrawalCommand {
   idempotencyKey: string;
-  fingerprint: string;
   userId: string;
-  asset: Asset;
   amount: Money;
   destinationAddress: string;
 }
 
 export interface RequestWithdrawalResult {
   withdrawalId: string;
-  status: 'PENDING';
+  status: WithdrawalStatus;
   asset: string;
   amount: string;
 }
@@ -29,19 +35,27 @@ export interface WalletReservationPort {
   reserve(input: {
     withdrawalId: string;
     userId: string;
-    asset: Asset;
     amount: Money;
   }): Promise<{ reservationId: string }>;
 }
+
+/**
+ * Three outcomes, all of them expected protocol results rather than failures.
+ * `CONFLICT` is a return value, not an adapter-thrown exception, so the
+ * workflow — not whichever storage happens to detect it — decides what a
+ * key collision means.
+ */
+export type IdempotencyClaim =
+  | { kind: 'CLAIMED' }
+  | { kind: 'REPLAY'; result: RequestWithdrawalResult }
+  | { kind: 'CONFLICT' };
 
 export interface WithdrawalIdempotencyPort {
   claim(input: {
     operation: 'REQUEST_WITHDRAWAL';
     key: string;
     fingerprint: string;
-  }): Promise<
-    { kind: 'CLAIMED' } | { kind: 'REPLAY'; result: RequestWithdrawalResult }
-  >;
+  }): Promise<IdempotencyClaim>;
   complete(key: string, result: RequestWithdrawalResult): Promise<void>;
 }
 
@@ -64,10 +78,18 @@ export class RequestWithdrawal {
       const claim = await this.dependencies.idempotency.claim({
         operation: 'REQUEST_WITHDRAWAL',
         key: command.idempotencyKey,
-        fingerprint: command.fingerprint,
+        fingerprint: createRequestFingerprint(command),
       });
-      if (claim.kind === 'REPLAY') {
-        return claim.result;
+
+      switch (claim.kind) {
+        case 'REPLAY':
+          return claim.result;
+        case 'CONFLICT':
+          throw new IdempotencyKeyConflictError(command.idempotencyKey);
+        case 'CLAIMED':
+          break;
+        default:
+          return assertNever(claim);
       }
 
       const withdrawalId = this.dependencies.withdrawalIdGenerator.next();
@@ -75,7 +97,6 @@ export class RequestWithdrawal {
         await this.dependencies.walletReservation.reserve({
           withdrawalId,
           userId: command.userId,
-          asset: command.asset,
           amount: command.amount,
         });
       const occurredAt = this.dependencies.clock.now();
@@ -99,13 +120,12 @@ export class RequestWithdrawal {
           userId: withdrawal.userId,
           asset: withdrawal.asset.code,
           amount: withdrawal.amount.toDecimalString(),
-          destinationAddress: withdrawal.destinationAddress.value,
         },
       });
 
       const result: RequestWithdrawalResult = {
         withdrawalId: withdrawal.id,
-        status: 'PENDING',
+        status: withdrawal.status,
         asset: withdrawal.asset.code,
         amount: withdrawal.amount.toDecimalString(),
       };

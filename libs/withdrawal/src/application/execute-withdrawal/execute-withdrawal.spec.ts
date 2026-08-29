@@ -33,9 +33,6 @@ describe('ExecuteWithdrawal', () => {
         async add() {
           return;
         },
-        async getById() {
-          return withdrawal;
-        },
         async getForUpdate() {
           return withdrawal;
         },

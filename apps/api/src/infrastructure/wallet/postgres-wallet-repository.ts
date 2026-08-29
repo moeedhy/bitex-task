@@ -2,7 +2,7 @@ import { Money, resolveAsset } from '@bitex/platform';
 import type { Asset } from '@bitex/platform';
 import { WalletAccount, WalletNotFoundError } from '@bitex/wallet';
 import type { WalletRepository } from '@bitex/wallet';
-import type { PostgresTransactionRunner } from './postgres-transaction-runner.js';
+import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
 
 interface WalletRow {
   id: string;

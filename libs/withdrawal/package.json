@@ -13,7 +13,12 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@bitex/platform": "workspace:*",
-    "zod": "^4.4.3"
+    "@bitex/platform": "workspace:*"
+  },
+  "nx": {
+    "tags": [
+      "type:module",
+      "scope:withdrawal"
+    ]
   }
 }

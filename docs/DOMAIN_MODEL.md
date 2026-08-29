@@ -24,6 +24,14 @@ PENDING -> PROCESSING -> COMPLETED
                      \-> FAILED
 ```
 
+The challenge suggests a five-state model including `FUNDS_RESERVED`. This model
+collapses it to four deliberately: funds are reserved inside the same
+transaction that creates the Withdrawal, so a Withdrawal can never be observed
+before its reservation exists. A separate `FUNDS_RESERVED` state would therefore
+be unreachable by any reader — `PENDING` already means *created and funded,
+awaiting execution*. Modelling a state no observer can distinguish would add a
+transition to test and maintain without adding information.
+
 Terminal states cannot regress or repeat. `COMPLETED` requires a provider transaction reference; `FAILED` requires `PROVIDER_ERROR`. Creation and persisted-state reconstitution both validate the aggregate.
 
 `WithdrawalAddress` is an immutable value object. It rejects blank or oversized destinations, normalizes on creation, and rejects a persisted value that is not already normalized, since that signals a persistence defect rather than untrusted input. It deliberately avoids blockchain-specific validation because blockchain integration is out of scope.

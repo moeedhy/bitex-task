@@ -10,9 +10,6 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./apps/api/src/infrastructure/database/000_create_test_database.sql:/docker-entrypoint-initdb.d/000_create_test_database.sql:ro
-      - ./apps/api/src/infrastructure/database/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
-      - ./apps/api/src/infrastructure/database/migrations/002_domain_aggregate_refactor.sql:/docker-entrypoint-initdb.d/002_domain_aggregate_refactor.sql:ro
-      - ./apps/api/src/infrastructure/database/seed.sql:/docker-entrypoint-initdb.d/003_seed.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U pooleno -d pooleno']
       interval: 3s
@@ -65,6 +62,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_TOPIC: withdrawal-execution-requested
       ENABLE_MESSAGING: 'true'
+      SEED_DEV_DATA: 'true'
       FAKE_PROVIDER_OUTCOME: SUCCESS
     ports:
       - '3000:3000'

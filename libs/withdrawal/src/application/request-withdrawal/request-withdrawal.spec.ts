@@ -1,16 +1,24 @@
 import { Assets, Money } from '@bitex/platform';
+import { IdempotencyKeyConflictError } from '../withdrawal.errors.js';
 import { RequestWithdrawal } from './request-withdrawal.js';
 import type {
+  IdempotencyClaim,
   RequestWithdrawalDependencies,
   RequestWithdrawalResult,
 } from './request-withdrawal.js';
 
+/**
+ * Stands in for any wallet-side domain rejection. The withdrawal slice must not
+ * import the wallet module, so the test asserts on propagation, not identity.
+ */
+class WalletRejection extends Error {
+  readonly code = 'INSUFFICIENT_AVAILABLE_BALANCE' as const;
+}
+
 describe('RequestWithdrawal', () => {
   const command = {
     idempotencyKey: 'key-123',
-    fingerprint: 'fingerprint-123',
     userId: 'user-123',
-    asset: Assets.USDT,
     amount: Money.parse('100', Assets.USDT),
     destinationAddress: 'TXYZ123456789',
   };
@@ -19,9 +27,11 @@ describe('RequestWithdrawal', () => {
     const withdrawals: unknown[] = [];
     const events: unknown[] = [];
     const completions: RequestWithdrawalResult[] = [];
+    const claimedFingerprints: string[] = [];
     let reserveCalls = 0;
     let transactionCalls = 0;
-    let replay: RequestWithdrawalResult | undefined;
+    let claim: IdempotencyClaim = { kind: 'CLAIMED' };
+    let reserveFailure: Error | undefined;
 
     const dependencies: RequestWithdrawalDependencies = {
       transactionRunner: {
@@ -31,10 +41,9 @@ describe('RequestWithdrawal', () => {
         },
       },
       idempotency: {
-        async claim() {
-          return replay
-            ? { kind: 'REPLAY' as const, result: replay }
-            : { kind: 'CLAIMED' as const };
+        async claim(input) {
+          claimedFingerprints.push(input.fingerprint);
+          return claim;
         },
         async complete(_key, result) {
           completions.push(result);
@@ -43,15 +52,15 @@ describe('RequestWithdrawal', () => {
       walletReservation: {
         async reserve() {
           reserveCalls += 1;
+          if (reserveFailure) {
+            throw reserveFailure;
+          }
           return { reservationId: 'reservation-1' };
         },
       },
       withdrawals: {
         async add(withdrawal) {
           withdrawals.push(withdrawal);
-        },
-        async getById() {
-          return null;
         },
         async getForUpdate() {
           throw new Error('not used');
@@ -75,14 +84,18 @@ describe('RequestWithdrawal', () => {
       withdrawals,
       events,
       completions,
+      claimedFingerprints,
       get reserveCalls() {
         return reserveCalls;
       },
       get transactionCalls() {
         return transactionCalls;
       },
-      setReplay(result: RequestWithdrawalResult) {
-        replay = result;
+      setClaim(next: IdempotencyClaim) {
+        claim = next;
+      },
+      failReservation(error: Error) {
+        reserveFailure = error;
       },
     };
   };
@@ -111,6 +124,21 @@ describe('RequestWithdrawal', () => {
     expect(harness.completions).toEqual([result]);
   });
 
+  it('derives the fingerprint from the command instead of trusting the caller', async () => {
+    const harness = createHarness();
+
+    await harness.useCase.execute(command);
+    await harness.useCase.execute({
+      ...command,
+      amount: Money.parse('100.000000', Assets.USDT),
+      destinationAddress: '  TXYZ123456789  ',
+    });
+
+    expect(harness.claimedFingerprints).toHaveLength(2);
+    expect(harness.claimedFingerprints[0]).toBeTruthy();
+    expect(harness.claimedFingerprints[0]).toBe(harness.claimedFingerprints[1]);
+  });
+
   it('returns the stored response without repeating financial effects', async () => {
     const harness = createHarness();
     const original: RequestWithdrawalResult = {
@@ -119,12 +147,39 @@ describe('RequestWithdrawal', () => {
       asset: 'USDT',
       amount: '100',
     };
-    harness.setReplay(original);
+    harness.setClaim({ kind: 'REPLAY', result: original });
 
     const result = await harness.useCase.execute(command);
 
     expect(result).toEqual(original);
     expect(harness.reserveCalls).toBe(0);
+    expect(harness.withdrawals).toHaveLength(0);
+    expect(harness.events).toHaveLength(0);
+    expect(harness.completions).toHaveLength(0);
+  });
+
+  it('rejects a key reused with a different payload without reserving funds', async () => {
+    const harness = createHarness();
+    harness.setClaim({ kind: 'CONFLICT' });
+
+    await expect(harness.useCase.execute(command)).rejects.toThrow(
+      IdempotencyKeyConflictError,
+    );
+    expect(harness.reserveCalls).toBe(0);
+    expect(harness.withdrawals).toHaveLength(0);
+    expect(harness.events).toHaveLength(0);
+    expect(harness.completions).toHaveLength(0);
+  });
+
+  it('propagates a wallet domain rejection without persisting anything', async () => {
+    const harness = createHarness();
+    harness.failReservation(
+      new WalletRejection('insufficient available balance'),
+    );
+
+    await expect(harness.useCase.execute(command)).rejects.toThrow(
+      WalletRejection,
+    );
     expect(harness.withdrawals).toHaveLength(0);
     expect(harness.events).toHaveLength(0);
     expect(harness.completions).toHaveLength(0);

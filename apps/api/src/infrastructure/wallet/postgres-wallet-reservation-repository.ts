@@ -4,7 +4,7 @@ import type {
   WalletReservationRepository,
   WalletReservationSnapshot,
 } from '@bitex/wallet';
-import type { PostgresTransactionRunner } from './postgres-transaction-runner.js';
+import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
 
 interface ReservationRow {
   id: string;
@@ -47,10 +47,10 @@ export class PostgresWalletReservationRepository
        FOR UPDATE`,
       [reservationId],
     );
-    if (result.rowCount !== 1) {
+    const row = result.rows[0];
+    if (!row) {
       throw new ReservationNotFoundError(reservationId);
     }
-    const row = result.rows[0];
     const asset = resolveAsset(row.asset);
     return WalletReservation.reconstitute({
       id: row.id,

@@ -1,11 +1,14 @@
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app/app.module.js';
-import { ApiExceptionFilter } from './app/api-exception.filter.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Shutdown hooks drive the messaging lifecycle, so consumers and publishers
+  // stop cleanly instead of being killed mid-batch.
+  app.enableShutdownHooks();
   app.use((request: Request, response: Response, next: NextFunction) => {
     const correlationId = String(
       request.headers['x-correlation-id'] || randomUUID(),
@@ -14,9 +17,16 @@ async function bootstrap() {
     response.setHeader('x-correlation-id', correlationId);
     next();
   });
-  app.useGlobalFilters(new ApiExceptionFilter());
   const port = process.env.PORT || 3000;
   await app.listen(port);
 }
 
-bootstrap();
+bootstrap().catch((error) => {
+  new Logger('Bootstrap').error({
+    operation: 'bootstrap',
+    result: 'failed',
+    errorCode: (error as Error).name,
+    message: (error as Error).message,
+  });
+  process.exitCode = 1;
+});

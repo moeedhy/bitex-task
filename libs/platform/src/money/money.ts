@@ -42,6 +42,10 @@ export class Money {
 
     const [, signToken, wholePart, fraction = ''] = match;
 
+    if (wholePart === undefined) {
+      throw new InvalidMoneyAmountError();
+    }
+
     if (fraction.length > asset.decimals) {
       throw new MoneyPrecisionExceededError(asset.code, asset.decimals);
     }

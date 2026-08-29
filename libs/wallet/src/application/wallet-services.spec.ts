@@ -69,7 +69,6 @@ describe('wallet application services', () => {
     const result = await harness.reserveFunds.execute({
       withdrawalId: 'withdrawal-1',
       userId: 'user-123',
-      asset: Assets.USDT,
       amount: amount('80'),
     });
 
@@ -84,7 +83,6 @@ describe('wallet application services', () => {
     await harness.reserveFunds.execute({
       withdrawalId: 'withdrawal-1',
       userId: 'user-123',
-      asset: Assets.USDT,
       amount: amount('80'),
     });
 
@@ -103,7 +101,6 @@ describe('wallet application services', () => {
     await harness.reserveFunds.execute({
       withdrawalId: 'withdrawal-1',
       userId: 'user-123',
-      asset: Assets.USDT,
       amount: amount('80'),
     });
 

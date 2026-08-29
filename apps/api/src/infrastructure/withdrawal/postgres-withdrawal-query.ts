@@ -20,10 +20,10 @@ export class PostgresWithdrawalQuery implements WithdrawalQueryPort {
        FROM withdrawals WHERE id = $1`,
       [id],
     );
-    if (result.rowCount !== 1) {
+    const row = result.rows[0];
+    if (!row) {
       return null;
     }
-    const row = result.rows[0];
     const asset = resolveAsset(row.asset);
     const amount = Money.fromAtomicUnits(
       BigInt(row.amount_atomic),

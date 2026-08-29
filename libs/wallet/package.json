@@ -16,7 +16,11 @@
     }
   },
   "nx": {
-    "name": "wallet"
+    "name": "wallet",
+    "tags": [
+      "type:module",
+      "scope:wallet"
+    ]
   },
   "dependencies": {
     "@bitex/platform": "workspace:*",
