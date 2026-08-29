@@ -4,10 +4,14 @@ A production-conscious digital-asset withdrawal workflow implemented as an Nx-ma
 
 ## Projects
 
-- `@bitex/platform` — exact `bigint` money, asset catalog, and stable technical ports.
-- `@bitex/wallet` — Wallet domain with independent `WalletAccount` and `WalletReservation` aggregates.
-- `@bitex/withdrawal` — Withdrawal domain, `WithdrawalAddress`, and vertical application slices.
-- `@bitex/api` — Nest composition root plus PostgreSQL, Kafka, Redis, HTTP, and provider adapters.
+- `@bitex/platform` — exact `bigint` money, asset catalog, branded UUID identity,
+  the `CodedError` base and the integration-event envelope.
+- `@bitex/wallet` — Wallet domain with independent `WalletAccount` and
+  `WalletReservation` aggregates.
+- `@bitex/withdrawal` — Withdrawal domain with domain events, vertical
+  application slices, and the published integration contract.
+- `@bitex/api` — adapter bindings plus PostgreSQL, Kafka, Redis, HTTP and
+  provider adapters. It holds no business logic; each context wires itself.
 
 ## Run with Docker
 
@@ -41,20 +45,44 @@ curl http://localhost:3000/withdrawals/<withdrawal-id>
 
 Reuse of the same key and same canonical payload returns the original logical response. Reuse with a different payload returns HTTP 409. Concurrent requests with the same key serialise on the idempotency row, so one creates the withdrawal and the other replays its result.
 
+Every failure answers with the same envelope — `{ statusCode, errorCode, message }`.
+The status for each `errorCode` is a `Record<ApiErrorCode, HttpStatus>`, so a
+domain error that nobody mapped is a compile error rather than a 500.
+
+Pass `x-correlation-id` and it is echoed back, stored on the outbox row,
+published as a Kafka header and re-opened by the consumer, so one id links the
+request to the settlement that answered it.
+
 ## Repository layout
 
 ```text
-libs/platform        Money, Asset, and shared technical ports
+libs/platform        Money, Asset, branded identity, CodedError, event envelope
 libs/wallet          WalletAccount + WalletReservation aggregates and use cases
-libs/withdrawal      Withdrawal aggregate, vertical slices, and its ports
-apps/api/src/app             HTTP delivery
-apps/api/src/composition     Nest modules (one per bounded context)
-apps/api/src/infrastructure  adapters, grouped by the context that owns them
+libs/withdrawal      Withdrawal aggregate, vertical slices, ports, and the
+                     published integration contract
+libs/*/src/nest      each context's own Nest module -- the only NestJS imports
+
+apps/api/src/http            controller, DTOs, exception filter, rate-limit guard
+apps/api/src/config          one zod-validated AppConfig
+apps/api/src/modules         adapter bindings for the contexts' tokens
+apps/api/src/observability   correlation-id context and middleware
+apps/api/src/adapters        adapters, grouped by the context that owns them
 ```
 
-Tests are colocated with the code they cover (`*.spec.ts`) rather than kept in a
-top-level `test/` directory, so a slice and its tests move together. PostgreSQL
-integration tests live beside the adapters they exercise and are opt-in.
+Each library ships its own Nest module behind a `./nest` subpath export, so a
+bounded context owns its composition. `apps/api` chooses adapters and binds them
+to the contexts' tokens; it contains no business logic.
+
+`docs/CONVENTIONS.md` is the charter these follow — naming, ports, errors,
+contracts, DI — and says which rules are enforced by the build rather than by
+review.
+
+**On the deliverables layout.** The brief sketches a flat `src/` + `test/` tree.
+This is an Nx monorepo, so neither exists at the root: the code lives in `apps/`
+and `libs/`, and tests are colocated with what they cover (`*.spec.ts`) so a
+slice and its tests move together. PostgreSQL integration tests sit beside the
+adapters they exercise. Adding a top-level `test/` while `src/` does not exist
+would be half a layout rather than a structure.
 
 ## Development and tests
 
@@ -94,12 +122,17 @@ remembers to export it locally.
 - Idempotency returns `CLAIMED`, `REPLAY` or `CONFLICT`; the request fingerprint is derived inside the workflow from parsed values, never supplied by the caller.
 - Messages that cannot succeed are dead-lettered to `<topic>.dlq` so one bad record cannot park a Kafka partition.
 - Withdrawals left `PROCESSING` past a timeout are re-driven by a recovery worker, so a lost or dead-lettered message cannot strand reserved funds.
-- Transactions bound `lock_timeout` and `statement_timeout`; the connection pool is bounded and shared deliberately.
+- Transactions opened through `PostgresTransactionRunner` bound `lock_timeout` and `statement_timeout`; the connection pool is bounded and shared deliberately.
+- Every aggregate write asserts it changed exactly one row. A no-op `UPDATE` aborts the transaction instead of committing a reservation whose wallet was never debited.
+- Locks are taken in one order everywhere — wallet → reservation on the reserve path, reservation → wallet on the settle path — and that hierarchy is documented rather than accidental.
 - Provider calls happen outside database transactions and use `withdrawalId` as a durable fake-provider idempotency key.
 - Money uses integer atomic units (`bigint`/PostgreSQL `BIGINT`), never JavaScript floating point.
 - Migrations are applied by the application at startup under an advisory lock and recorded in `schema_migrations`, so an existing database is never left on an older schema.
-- Nest modules mirror the bounded contexts; `WalletModule` exports use cases only and keeps its repositories private.
-- Module boundaries are enforced by `@nx/enforce-module-boundaries`, so a Withdrawal-to-Wallet import fails `lint`.
+- Each context ships its own Nest module and exports use cases only, keeping its repositories private. `@nestjs/common` appears under `libs/*/src/nest/` and nowhere else, so the domain and application layers import no framework.
+- DI wiring is type-checked: tokens carry the type they resolve to, and a factory whose parameters disagree with its `inject` list is a compile error rather than a runtime one.
+- A domain error with no HTTP status mapping is a compile error, not a 500.
+- Module boundaries are enforced by `@nx/enforce-module-boundaries`, so a Withdrawal-to-Wallet import fails `lint` — including through a `./nest` subpath.
+- Invariant "a failed withdrawal releases its reservation" is a domain event the aggregate emits, handled exhaustively, so a new terminal state cannot be added without deciding what happens to the reserved funds.
 
 ## Assumptions and limitations
 
@@ -107,9 +140,11 @@ remembers to export it locally.
 - Authentication, fees, blockchain integration, reconciliation, and multi-provider routing are intentionally out of scope.
 - Redis rate limiting fails open, so an outage reduces abuse protection but cannot affect balances.
 - `userId` is taken from the request body and `GET /withdrawals/{id}` is unscoped; authentication is out of scope, but the ownership check belongs in the application layer and is a known omission.
-- A withdrawal that can never resolve is re-published by the recovery worker on every cycle; bounding that needs an attempt counter.
+- A withdrawal that can never resolve is retried once per timeout window rather than on every cycle — recovery claims rows with `FOR UPDATE SKIP LOCKED` and re-stamps `updated_at` — but it is still retried indefinitely. Bounding that needs an attempt counter, and a column to hold it.
+- `processed_events` and `idempotency_records` have no retention policy; `outbox_events` does.
 - The fake provider stores its result in PostgreSQL to model provider-side idempotency. A real provider needs an idempotency key, lookup API, or reconciliation process.
 - Kafka and the outbox provide at-least-once delivery, not exactly-once external effects.
-- Actual implementation time: approximately 2 hours of AI-assisted implementation and verification.
+- Actual implementation time: approximately 2 hours of AI-assisted implementation and verification, followed by a structured architecture review and refactor (`docs/plans/REFACTOR_PLAN.md`).
 
-See [architecture](docs/ARCHITECTURE.md), [domain model](docs/DOMAIN_MODEL.md), and [decisions](docs/DECISIONS.md).
+See [architecture](docs/ARCHITECTURE.md), [domain model](docs/DOMAIN_MODEL.md),
+[conventions](docs/CONVENTIONS.md), and [decisions](docs/DECISIONS.md).

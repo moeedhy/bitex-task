@@ -7,7 +7,7 @@ The service is a modular monolith with three Nx libraries and one NestJS composi
 Dependency direction is:
 
 ```text
-domain <- application ports <- infrastructure adapters <- Nest composition
+domain <- application ports <- adapters <- Nest wiring
 ```
 
 Withdrawal owns the consumer-facing `WalletReservationPort` and `WalletSettlementPort`. The composition root adapts those narrow capabilities to Wallet application services. Withdrawal never imports Wallet repositories or aggregate internals.
@@ -29,17 +29,34 @@ by the container as well as by the lint rule. Ports are plain interfaces, and
 every provider is registered with `useFactory` against a class token, so the
 libraries need no NestJS import to be injectable.
 
+**Superseded.** Each library now ships its own Nest module behind a `./nest`
+subpath export. The property that rationale protected still holds — Nest appears
+only under `src/nest/`, so the domain and application layers import no framework
+— but a context that owns a boundary should own its composition. See
+`DECISIONS.md` §40.
+
 Layout on disk:
 
 ```text
-libs/{platform,wallet,withdrawal}/src/{domain,application}
-apps/api/src/app             HTTP delivery
-apps/api/src/composition     Nest modules and environment reading
-apps/api/src/infrastructure/{shared,wallet,withdrawal,messaging,jobs,redis}
+libs/{wallet,withdrawal}/src/domain              aggregates, value objects, domain events
+libs/{wallet,withdrawal}/src/application/ports   one port per file
+libs/{wallet,withdrawal}/src/application/<slice> one folder per use case
+libs/withdrawal/src/contracts                    the published integration event
+libs/{platform,wallet,withdrawal}/src/nest       DI wiring -- the only NestJS imports
+
+apps/api/src/http            controller, DTOs, exception filter, rate-limit guard
+apps/api/src/config          one zod-validated AppConfig
+apps/api/src/modules         adapter bindings for the contexts' tokens
+apps/api/src/observability   correlation-id context and middleware
+apps/api/src/adapters/{shared,wallet,withdrawal,messaging,jobs,redis,database}
 ```
 
-Adapters are grouped by the context that owns them, so `infrastructure/wallet`
-holds exactly what `WalletModule` wires.
+Adapters are grouped by the context that owns them, so `adapters/wallet` holds
+exactly what `WalletAdaptersModule` binds.
+
+Each library ships its own Nest module behind a `./nest` subpath export, so a
+context owns its composition. `@nestjs/common` appears only under `src/nest/`:
+the domain and application layers import no framework.
 
 ```mermaid
 flowchart LR
@@ -61,9 +78,11 @@ flowchart LR
 
 ## Transaction boundaries
 
-`PostgresTransactionRunner` binds one `pg` client to an `AsyncLocalStorage` scope. Application code only sees `TransactionRunner`; infrastructure repositories obtain the active client and throw `MissingTransactionError` when mutation is attempted without it. A nested `run` joins the active transaction rather than opening a second one, which is what makes wallet operations participants.
+`PostgresTransactionRunner` binds one `pg` client to an `AsyncLocalStorage` scope. Application code only sees `TransactionRunner`; adapters take a `TransactionalClient`, obtain the active client through it, and throw `MissingTransactionError` when mutation is attempted without one. The runner is published under both tokens — two views of one instance, neither of them the concrete class. A nested `run` joins the active transaction rather than opening a second one, which is what makes wallet operations participants.
 
-Every transaction sets a transaction-local `lock_timeout` (3s) and `statement_timeout` (10s). The HTTP path, outbox publisher, recovery worker and read model share one bounded pool, so an unbounded lock wait on a contended wallet or idempotency row would starve event delivery.
+Every transaction **opened through `PostgresTransactionRunner`** sets a transaction-local `lock_timeout` (3s) and `statement_timeout` (10s). The HTTP path, outbox publisher, recovery worker and read model share one bounded pool, so an unbounded lock wait on a contended wallet or idempotency row would starve event delivery.
+
+Two paths do not go through the runner and therefore carry no limits: the outbox publisher's own `BEGIN`/`COMMIT` when it leases a batch, and the schema migrator. The publisher's claim is `FOR UPDATE SKIP LOCKED`, which never waits, and the migrator runs before the application accepts traffic — so neither can produce the unbounded wait the limits exist to prevent. This paragraph previously said *every* transaction, which was not true of either.
 
 Request transaction:
 
@@ -100,7 +119,20 @@ Redis limits requests to 10 per user per minute. The adapter fails open. Postgre
 
 ## Observability
 
-Nest emits structured context for infrastructure failures. Correlation IDs are accepted from `x-correlation-id` or generated and returned. Operational logs should include `withdrawalId`, `userId`, `eventId`, operation, result, and error code without destination payloads or secrets.
+Every infrastructure failure is logged with an `errorCode` and a message read
+through `errorCode`/`errorMessage`, which fall back to a driver code rather than
+to the literal string `"error"` that `(error as Error).name` yields for every
+`pg` failure. `ApiExceptionFilter` logs every HTTP failure — 5xx with the
+underlying message, 4xx without.
+
+A correlation id is accepted from `x-correlation-id` or generated, returned on
+the response, and carried through the **asynchronous** half of the flow: it is
+stored on the `outbox_events` row, published as a Kafka header, and re-opened by
+the consumer, so one id links the request, the publish and the settlement. It
+travels in an `AsyncLocalStorage` context rather than through port signatures.
+
+Operational logs carry `correlationId`, `withdrawalId`, `userId`, `eventId`,
+operation, result and error code, without destination payloads or secrets.
 
 ### Metrics
 

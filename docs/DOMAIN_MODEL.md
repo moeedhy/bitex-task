@@ -41,3 +41,60 @@ Terminal states cannot regress or repeat. `COMPLETED` requires a provider transa
 `Asset` defines a canonical code and decimal precision. `Money` stores exact integer atomic units using `bigint`, rejects non-canonical decimal input, and prevents cross-asset arithmetic. Wallet and Withdrawal decide where negative or zero values are invalid business operations.
 
 Wallet and Withdrawal are deployed together because requesting a Withdrawal requires strong consistency. A future database/service split would need a process manager and compensation rather than pretending the current local transaction can cross that boundary.
+
+## Identity
+
+Every identifier is a branded UUID: `WithdrawalId`, `ReservationId`, `UserId`,
+`EventId` in `libs/platform`, and the context-private `WalletId` in
+`libs/wallet`. They are `string` at runtime and mutually unassignable at compile
+time, so `settle(reservationId, withdrawalId)` cannot be called with its
+arguments swapped.
+
+The type is unforgeable outside `parse()`, which is what allows the aggregates to
+stop checking their own identities. Each of `WalletAccount`, `WalletReservation`
+and `Withdrawal` previously carried a private `assertIdentity` — the same
+non-blank test, throwing two different error types, accepting `'wallet-!!!'` as
+a valid wallet id. The check now happens once, where a raw string crosses into
+the system: an HTTP path parameter, a Kafka payload, a database row.
+
+New identifiers are UUIDv7. The leading 48 bits are a millisecond timestamp, so
+generated keys are monotonically increasing: inserts stay on the right-hand edge
+of the primary key's B-tree instead of scattering across it, and `ORDER BY id` is
+a usable proxy for creation order. Validation accepts any RFC 4122 layout, since
+rows written before that change hold v4 values and are still valid identities.
+
+`userId` is branded too, which deviates from the brief's `"userId": "user-123"`
+examples — see `DECISIONS.md` §27 for the trade and the one-file reversal.
+
+## Domain events
+
+A terminal transition that leaves someone else work to do says so, and names
+what it left:
+
+| Emitted by | Event | Carries | Obligation it creates |
+|---|---|---|---|
+| `Withdrawal.request()` | `WithdrawalExecutionRequested` | withdrawal, user, asset, amount | publish the execution intent |
+| `Withdrawal.complete()` | `WithdrawalCompleted` | withdrawal, **reservationId**, provider reference | capture the reserved funds |
+| `Withdrawal.fail()` | `WithdrawalFailed` | withdrawal, **reservationId**, reason | release the reserved funds |
+
+`pullDomainEvents()` drains them; the caller acts on each exactly once, inside
+the transaction that persists the state change that produced it.
+
+This is how invariant §5.8 of the brief — *a failed withdrawal must release its
+reservation* — stops being an `if`/`else` in an application service. It was true
+there only because one method happened to be written correctly, and adding a
+fifth status meant remembering to extend it. Now the aggregate states the
+obligation together with the reservation it concerns, and `ExecuteWithdrawal`
+discharges it in a `switch` that `assertNever` makes exhaustive: a new terminal
+state cannot be added without deciding what becomes of the reserved funds.
+
+These are *domain* events, not the wire format. They carry `Money` and `Asset`
+rather than decimal strings, and nothing outside `libs/withdrawal` sees them. The
+integration event published to Kafka is derived from
+`WithdrawalExecutionRequested` by `src/contracts/`, which is the only place the
+two shapes meet.
+
+`Withdrawal.isTerminal()` is the single definition of terminality. It replaced
+two literal `status === 'COMPLETED' || status === 'FAILED'` comparisons in the
+application layer — the rule stated outside the aggregate that owns it, twice,
+where forgetting one re-settles a finished withdrawal.

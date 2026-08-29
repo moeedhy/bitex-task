@@ -369,7 +369,10 @@ after a compiler-option change. Use `--force` when changing `tsconfig.base.json`
 
 - **Ownership checks** (§12) are the largest correctness gap that is not a
   challenge constraint.
-- **Outbox growth**: published rows are never pruned.
+- ~~**Outbox growth**: published rows are never pruned.~~ Implemented —
+  `OutboxPublisher.pruneIfDue` removes published rows past `OUTBOX_RETENTION_MS`
+  on its own cadence. `processed_events` and `idempotency_records` still have no
+  retention, and should get the same treatment.
 - **Recovery attempt limits** (§7) once there is somewhere to record them.
 - **Dead-letter reprocessing**: a parked message currently needs an operator;
   the withdrawal itself recovers, the audit trail does not.

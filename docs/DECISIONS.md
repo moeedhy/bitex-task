@@ -44,7 +44,9 @@ Migration `002_domain_aggregate_refactor.sql` backfills the reservation asset be
 
 `Money` models a signed exact quantity: `subtract` may return a negative result and `parse` accepts a leading `-`. The domain plan suggests a non-negative amount type instead, so this is a deliberate divergence.
 
-A signed type lets `availableBalance` be a plain `balance - reserved` with no special case, and keeps `Money` a pure arithmetic value object rather than one carrying a wallet-specific rule. Non-negativity is enforced where it is actually a business rule, at three layers: the HTTP edge rejects non-positive request amounts, `WalletAccount.assertOperationAmount` rejects non-positive operands, and `WalletAccount.assertBalances` rejects negative balances on creation, reconstitution, and every mutation. Database `CHECK` constraints repeat the last of these.
+A signed type lets `availableBalance` be a plain `balance - reserved` with no special case, and keeps `Money` a pure arithmetic value object rather than one carrying a wallet-specific rule. Non-negativity is enforced where it is actually a business rule, at three layers: `RequestWithdrawal` calls `Withdrawal.assertRequestable` before any wallet row is touched, so a non-positive amount is rejected by the withdrawal aggregate rather than surfacing as `INVALID_WALLET_AMOUNT` from a module the caller never addressed; `WalletAccount.assertOperationAmount` rejects non-positive operands; and `WalletAccount.assertBalances` rejects negative balances on creation, reconstitution, and every mutation. Database `CHECK` constraints repeat the last of these.
+
+(An earlier version of this entry claimed the rejection happened at the HTTP edge. It did not — the amount reached the wallet first. §32 onwards describe the ordering that made the claim true.)
 
 ## 12. Unresolved provider execution never auto-fails a Withdrawal
 
@@ -519,3 +521,68 @@ two-file change and a forgotten update produced a failing test that said nothing
 about the property under protection. The property is "every file, in filename
 order, applied and recorded" — including `001` on an untracked database, which
 is why each migration must stay idempotent.
+
+## 49. Identifier columns are native `uuid`
+
+`005_uuid_ids.sql` retypes every identifier column from `TEXT` to `uuid`. It is
+an `ALTER`, deliberately — not a squashed baseline and not a drop-and-recreate.
+
+`SchemaMigrator` keys the applied set by **filename**, so on an existing volume
+a rewritten `001_baseline.sql` is not in that set, runs, no-ops through every
+`CREATE TABLE IF NOT EXISTS`, and is then recorded as applied — leaving a
+silently TEXT-typed database that the bookkeeping swears is current. Worse, if
+the rewritten baseline contained anything non-idempotent it would throw inside
+the per-file transaction, never be recorded, and crash-loop the application on
+every boot.
+
+A naive `ALTER … TYPE uuid` fails three separate ways, which is why the file has
+four ordered stages:
+
+1. `'user-123'::uuid` raises `22P02`. Rows whose ids are not UUIDs are deleted
+   first, child before parent, because every foreign key here is
+   `ON DELETE RESTRICT`. In practice this matches only the old dev seed row.
+2. PostgreSQL refuses to retype a column referenced by a foreign key, and 002's
+   composite `withdrawals_reservation_ownership_fk (reservation_id, id)` makes
+   `withdrawals.id` — a primary key — *also* an FK column.
+3. Those composite keys reference `UNIQUE` constraints, which must be dropped
+   after the keys that use them and restored before them.
+
+Columns that stay `TEXT`: the client-supplied `idempotency_key`, the enum-like
+`operation`, `transaction_reference` (a provider reference of the form
+`tx-<uuid>`, not a UUID), `locked_by`, the caller-supplied `correlation_id`,
+`asset`, and every status column.
+
+Verified against a database seeded with both legacy and valid rows: the legacy
+set was removed, the valid rows survived, all fifteen constraints were restored
+including the composite ownership key, and the full request-to-settlement flow
+then ran on the retyped schema.
+
+## 50. The deliverables layout deviates from the brief's sketch
+
+The brief sketches a flat `src/` + `test/` tree. This is an Nx monorepo, so
+neither exists at the root: code lives in `apps/` and `libs/`, and tests are
+colocated with what they cover so a slice and its tests move together. Adding a
+top-level `test/` while `src/` does not exist would be half a layout rather than
+a structure. `README.md` states this where a reviewer comparing the two will
+look.
+
+## 51. Documentation claims are checked, not asserted
+
+Four claims in this repository's own documentation were falsifiable in under
+five minutes, and are corrected in place with a note saying so rather than
+quietly edited:
+
+- `DECISIONS.md` §11 said the HTTP edge rejected non-positive amounts. It did
+  not — the amount reached the wallet aggregate first. §32 onward describe the
+  reordering that made the claim true.
+- `ARCHITECTURE.md` said *every* transaction sets `lock_timeout` and
+  `statement_timeout`. Two paths do not: the outbox publisher's own
+  `BEGIN`/`COMMIT` and the migrator. Neither can produce the unbounded wait the
+  limits exist to prevent, and the paragraph now says which and why.
+- `ARCHITECTURE.md` claimed correlation-id propagation and structured failure
+  context. Both are now true; see §47.
+- `APPLICATION_PLAN.md` listed outbox pruning as future work. It was already
+  implemented.
+
+A documented invariant that nothing enforces is worse than an undocumented one:
+it stops a reviewer from looking.
