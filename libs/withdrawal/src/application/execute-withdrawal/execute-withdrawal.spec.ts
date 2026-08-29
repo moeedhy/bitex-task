@@ -26,8 +26,12 @@ describe('ExecuteWithdrawal', () => {
     });
     const processed = new Set<string>();
     let providerCalls = 0;
-    let finalizeCalls = 0;
-    let releaseCalls = 0;
+    // The reservation ids are recorded, not just the call counts: the
+    // settlement target now comes from the aggregate's own event rather than
+    // from a field the caller reads, so a test that only counted calls would
+    // pass even if the wrong reservation were released.
+    const finalized: ReservationId[] = [];
+    const released: ReservationId[] = [];
     let transactionCalls = 0;
 
     const dependencies: ExecuteWithdrawalDependencies = {
@@ -57,11 +61,11 @@ describe('ExecuteWithdrawal', () => {
         },
       },
       walletSettlement: {
-        async finalize() {
-          finalizeCalls += 1;
+        async finalize(reservationId) {
+          finalized.push(reservationId);
         },
-        async release() {
-          releaseCalls += 1;
+        async release(reservationId) {
+          released.push(reservationId);
         },
       },
       provider: {
@@ -85,11 +89,13 @@ describe('ExecuteWithdrawal', () => {
       get providerCalls() {
         return providerCalls;
       },
+      finalized,
+      released,
       get finalizeCalls() {
-        return finalizeCalls;
+        return finalized.length;
       },
       get releaseCalls() {
-        return releaseCalls;
+        return released.length;
       },
       get transactionCalls() {
         return transactionCalls;
@@ -107,8 +113,8 @@ describe('ExecuteWithdrawal', () => {
 
     expect(harness.withdrawal.status).toBe('COMPLETED');
     expect(harness.withdrawal.transactionReference).toBe('tx-1');
-    expect(harness.finalizeCalls).toBe(1);
-    expect(harness.releaseCalls).toBe(0);
+    expect(harness.finalized).toEqual([RESERVATION_ID]);
+    expect(harness.released).toEqual([]);
     expect(harness.processed.has(EVENT_ID)).toBe(true);
     expect(harness.transactionCalls).toBe(2);
   });
@@ -122,8 +128,11 @@ describe('ExecuteWithdrawal', () => {
     });
 
     expect(harness.withdrawal.status).toBe('FAILED');
-    expect(harness.finalizeCalls).toBe(0);
-    expect(harness.releaseCalls).toBe(1);
+    expect(harness.finalized).toEqual([]);
+    // Invariant 5.8: the funds the failed withdrawal reserved go back. The
+    // reservation named here is the one the aggregate emitted, not one the use
+    // case looked up afterwards.
+    expect(harness.released).toEqual([RESERVATION_ID]);
     expect(harness.processed.has(EVENT_ID)).toBe(true);
   });
 

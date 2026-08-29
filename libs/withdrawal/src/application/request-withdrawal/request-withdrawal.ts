@@ -10,7 +10,7 @@ import type {
   WithdrawalId,
 } from '@bitex/platform';
 import { Withdrawal } from '../../domain/withdrawal.js';
-import type { WithdrawalStatus } from '../../domain/withdrawal.js';
+import type { WithdrawalStatus } from '../../domain/withdrawal-status.js';
 import { IdempotencyKeyConflictError } from '../withdrawal.errors.js';
 import type { WithdrawalRepository } from '../ports/withdrawal.repository.js';
 import { createRequestFingerprint } from './request-fingerprint.js';

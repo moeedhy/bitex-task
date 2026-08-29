@@ -6,7 +6,24 @@ import {
   InvalidWalletStateError,
 } from './wallet.errors.js';
 
-export type WalletReservationStatus = 'ACTIVE' | 'FINALIZED' | 'RELEASED';
+/**
+ * Declared as a value so the type and its runtime guard cannot drift; the
+ * guard below was previously a second array literal written by hand.
+ */
+export const WALLET_RESERVATION_STATUSES = [
+  'ACTIVE',
+  'FINALIZED',
+  'RELEASED',
+] as const;
+
+export type WalletReservationStatus =
+  (typeof WALLET_RESERVATION_STATUSES)[number];
+
+export function isWalletReservationStatus(
+  value: unknown,
+): value is WalletReservationStatus {
+  return (WALLET_RESERVATION_STATUSES as readonly unknown[]).includes(value);
+}
 
 export interface WalletReservationSnapshot {
   id: ReservationId;
@@ -17,7 +34,7 @@ export interface WalletReservationSnapshot {
 }
 
 export class WalletReservation {
-  private constructor(private readonly state: WalletReservationSnapshot) {}
+  private constructor(private state: WalletReservationSnapshot) {}
 
   static open(
     input: Omit<WalletReservationSnapshot, 'status'>,
@@ -32,7 +49,7 @@ export class WalletReservation {
     if (!snapshot.amount.isPositive()) {
       throw new InvalidReservationAmountError();
     }
-    if (!['ACTIVE', 'FINALIZED', 'RELEASED'].includes(snapshot.status)) {
+    if (!isWalletReservationStatus(snapshot.status)) {
       throw new InvalidWalletStateError(
         `Unknown wallet reservation status "${String(snapshot.status)}".`,
       );
@@ -61,20 +78,23 @@ export class WalletReservation {
   }
 
   finalize(): void {
-    this.assertActive('finalize');
-    this.state.status = 'FINALIZED';
+    this.commit('finalize', 'FINALIZED');
   }
 
   release(): void {
-    this.assertActive('release');
-    this.state.status = 'RELEASED';
+    this.commit('release', 'RELEASED');
   }
 
   toSnapshot(): WalletReservationSnapshot {
     return { ...this.state };
   }
 
-  private assertActive(action: string): void {
+  /**
+   * Validates the transition, then swaps the whole state -- the discipline
+   * `WalletAccount` already followed. Assigning `this.state.status` in place
+   * left the aggregate changed even when a later check rejected it.
+   */
+  private commit(action: string, target: WalletReservationStatus): void {
     if (this.state.status !== 'ACTIVE') {
       throw new InvalidReservationTransitionError(
         this.state.id,
@@ -82,6 +102,7 @@ export class WalletReservation {
         action,
       );
     }
+    this.state = { ...this.state, status: target };
   }
 
 }

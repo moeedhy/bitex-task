@@ -1,5 +1,5 @@
 import type { WithdrawalId } from '@bitex/platform';
-import type { WithdrawalStatus } from '../../domain/withdrawal.js';
+import type { WithdrawalStatus } from '../../domain/withdrawal-status.js';
 import { WithdrawalNotFoundError } from '../withdrawal.errors.js';
 
 export interface WithdrawalView {

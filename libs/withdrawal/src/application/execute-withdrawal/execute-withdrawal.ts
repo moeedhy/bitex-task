@@ -1,3 +1,4 @@
+import { assertNever } from '@bitex/platform';
 import type {
   Clock,
   EventId,
@@ -6,6 +7,8 @@ import type {
   WithdrawalId,
 } from '@bitex/platform';
 import { WithdrawalExecutionUnresolvedError } from '../withdrawal.errors.js';
+import type { Withdrawal } from '../../domain/withdrawal.js';
+import type { WithdrawalDomainEvent } from '../../domain/withdrawal.events.js';
 import type { WithdrawalRepository } from '../ports/withdrawal.repository.js';
 import type {
   ExecutionRequest,
@@ -65,15 +68,8 @@ export class ExecuteWithdrawal {
     command: ExecuteWithdrawalCommand,
   ): Promise<ExecutionRequest | null> {
     return this.dependencies.transactionRunner.run(async () => {
-      if (await this.dependencies.processedEvents.has(command.eventId)) {
-        return null;
-      }
-
-      const withdrawal = await this.dependencies.withdrawals.getForUpdate(
-        command.withdrawalId,
-      );
-      if (withdrawal.status === 'COMPLETED' || withdrawal.status === 'FAILED') {
-        await this.dependencies.processedEvents.record(command.eventId);
+      const withdrawal = await this.loadSettleable(command);
+      if (!withdrawal) {
         return null;
       }
       if (withdrawal.status === 'PENDING') {
@@ -90,37 +86,82 @@ export class ExecuteWithdrawal {
     });
   }
 
+  /**
+   * The guard both transactions share: skip an event already processed, and
+   * skip a withdrawal that has already reached an outcome -- recording the
+   * event either way so redelivery stops.
+   *
+   * `null` means "nothing left to do", not "something went wrong". This was
+   * duplicated verbatim across `prepare` and `settle`, terminality included, so
+   * the two could disagree.
+   */
+  private async loadSettleable(
+    command: ExecuteWithdrawalCommand,
+  ): Promise<Withdrawal | null> {
+    if (await this.dependencies.processedEvents.has(command.eventId)) {
+      return null;
+    }
+    const withdrawal = await this.dependencies.withdrawals.getForUpdate(
+      command.withdrawalId,
+    );
+    if (withdrawal.isTerminal()) {
+      await this.dependencies.processedEvents.record(command.eventId);
+      return null;
+    }
+    return withdrawal;
+  }
+
+  /**
+   * Discharges what the aggregate said it owed.
+   *
+   * Invariant 5.8 -- a failed withdrawal releases its reservation -- is no
+   * longer an `if`/`else` that happens to be written correctly here. The
+   * aggregate emits the obligation together with the reservation it concerns,
+   * and this switch is exhaustive over that union: a new terminal state cannot
+   * be added without deciding what becomes of the reserved funds.
+   */
+  private async settleReservation(
+    events: readonly WithdrawalDomainEvent[],
+  ): Promise<void> {
+    for (const event of events) {
+      switch (event.type) {
+        case 'WithdrawalCompleted':
+          await this.dependencies.walletSettlement.finalize(
+            event.reservationId,
+          );
+          break;
+        case 'WithdrawalFailed':
+          await this.dependencies.walletSettlement.release(event.reservationId);
+          break;
+        case 'WithdrawalExecutionRequested':
+          // Published through the outbox by RequestWithdrawal; it settles
+          // nothing and cannot be emitted by a transition reached from here.
+          break;
+        default:
+          assertNever(event);
+      }
+    }
+  }
+
   private settle(
     command: ExecuteWithdrawalCommand,
     result: ExecutionResult,
   ): Promise<void> {
     return this.dependencies.transactionRunner.run(async () => {
-      if (await this.dependencies.processedEvents.has(command.eventId)) {
-        return;
-      }
-      const withdrawal = await this.dependencies.withdrawals.getForUpdate(
-        command.withdrawalId,
-      );
-      if (withdrawal.status === 'COMPLETED' || withdrawal.status === 'FAILED') {
-        await this.dependencies.processedEvents.record(command.eventId);
+      const withdrawal = await this.loadSettleable(command);
+      if (!withdrawal) {
         return;
       }
 
+      const now = this.dependencies.clock.now();
       if (result.status === 'SUCCESS') {
-        withdrawal.complete(
-          result.transactionReference,
-          this.dependencies.clock.now(),
-        );
-        await this.dependencies.walletSettlement.finalize(
-          withdrawal.reservationId,
-        );
+        withdrawal.complete(result.transactionReference, now);
       } else {
-        withdrawal.fail(result.reason, this.dependencies.clock.now());
-        await this.dependencies.walletSettlement.release(
-          withdrawal.reservationId,
-        );
+        withdrawal.fail(result.reason, now);
       }
+
       await this.dependencies.withdrawals.save(withdrawal);
+      await this.settleReservation(withdrawal.pullDomainEvents());
       await this.dependencies.processedEvents.record(command.eventId);
     });
   }

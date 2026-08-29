@@ -9,3 +9,10 @@ export * from './application/recover-stuck-withdrawals/recover-stuck-withdrawals
 export * from './domain/withdrawal.js';
 export * from './domain/withdrawal-address.js';
 export * from './domain/withdrawal.errors.js';
+export * from './domain/withdrawal-status.js';
+export type {
+  WithdrawalCompleted,
+  WithdrawalDomainEvent,
+  WithdrawalExecutionRequested,
+  WithdrawalFailed,
+} from './domain/withdrawal.events.js';

@@ -212,3 +212,51 @@ never declared by any workspace package will not reach the container.
 package to `@swc/jest` the same way our own sources are handled. The `.pnpm`
 segment is required because pnpm's store puts the package at
 `node_modules/.pnpm/uuid@<version>/node_modules/uuid`.
+
+## 32. Terminal transitions emit domain events; the application discharges them
+
+`Withdrawal.complete()` emits `WithdrawalCompleted{reservationId}` and `fail()`
+emits `WithdrawalFailed{reservationId}`. `ExecuteWithdrawal` drains them and
+reacts in a `switch` that is exhaustive over the union.
+
+Invariant 5.8 of the brief — a failed withdrawal must release its reservation —
+was previously an `if`/`else` in an application service. The rule held because
+one method happened to be written correctly, and adding a fifth status meant
+remembering to extend that method. Now the aggregate states the obligation
+*together with the reservation it concerns*, and `assertNever` in the handler
+means a new terminal state cannot be added without deciding what becomes of the
+reserved funds.
+
+These are domain events, not the wire format: they carry `Money` and `Asset`
+rather than decimal strings, and nothing outside `libs/withdrawal` sees them.
+The integration event published to Kafka is derived from one of them by the
+contract in `src/contracts`, which is the only place the two shapes meet.
+
+`pullDomainEvents()` drains rather than reads. The caller acts on each event
+exactly once, inside the transaction that persists the state change that
+produced it, so a second drain in the same transaction must return nothing.
+
+## 33. Terminality is defined by the aggregate
+
+`Withdrawal.isTerminal()` replaces the two literal
+`status === 'COMPLETED' || status === 'FAILED'` comparisons that lived in
+`ExecuteWithdrawal` — the definition of terminality, written outside the
+aggregate that owns it, twice. Missing one re-settles a finished withdrawal.
+
+Status vocabularies are declared as `as const` arrays and the unions derived
+from them, so the type and its runtime guard cannot drift. `reconstitute` checks
+the guard once, because a status arriving from a database row is a claim rather
+than a guarantee; `assertState` can then be an exhaustive `switch` rather than a
+chain of `if`s ending in a catch-all that accepted anything it had not
+considered.
+
+## 34. Aggregates take `now` rather than defaulting to `new Date()`
+
+`startProcessing`, `complete` and `fail` require the caller to supply the time.
+A default parameter put an ambient clock inside the domain: a hidden dependency
+that made time untestable and let a caller silently bypass the injected `Clock`.
+
+`Withdrawal` and `WalletReservation` also adopt `WalletAccount`'s
+validate-then-swap discipline. Both mutated `this.state` in place, so a
+transition rejected by a later assertion left the aggregate half-changed — a
+status advanced with no provider reference behind it.
