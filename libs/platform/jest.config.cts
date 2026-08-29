@@ -9,7 +9,7 @@ const swcJestConfig = JSON.parse(
 swcJestConfig.swcrc = false;
 
 module.exports = {
-  displayName: '@bitex/api',
+  displayName: '@bitex/platform',
   preset: '../../jest.preset.js',
   testEnvironment: 'node',
   transform: {

@@ -10,7 +10,7 @@ const describePostgres = process.env.TEST_DATABASE_URL
 describePostgres('SchemaMigrator', () => {
   const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const migrator = new SchemaMigrator(
-    join(process.cwd(), 'src/infrastructure/database/migrations'),
+    join(__dirname, '../database/migrations'),
   );
 
   beforeAll(async () => {
@@ -53,7 +53,7 @@ describePostgres('SchemaMigrator', () => {
     // nothing, so later migrations were never run.
     await pool.query(
       await readFile(
-        join(process.cwd(), 'src/infrastructure/database/migrations/001_initial.sql'),
+        join(__dirname, '../database/migrations/001_initial.sql'),
         'utf8',
       ),
     );

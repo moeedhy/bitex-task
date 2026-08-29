@@ -60,13 +60,24 @@ pnpm nx run-many -t build lint typecheck
 pnpm nx run-many -t test -- --runInBand
 ```
 
-Real PostgreSQL concurrency tests are opt-in and never mocked:
+Every project runs on Jest; there is no second test runner.
+
+The PostgreSQL tests are never mocked. They self-skip without `TEST_DATABASE_URL`,
+so run them with a database to exercise the real transactions, locks and
+constraints:
 
 ```bash
 docker compose up -d postgres
-TEST_DATABASE_URL=postgresql://pooleno:pooleno@localhost:55433/pooleno_test \
-  pnpm nx run api:test --runInBand
 ```
+
+```bash
+TEST_DATABASE_URL=postgresql://pooleno:pooleno@localhost:55433/pooleno_test \
+  pnpm nx run @bitex/api:test --runInBand
+```
+
+CI always sets `TEST_DATABASE_URL` (see `.github/workflows/ci.yml`), so the
+concurrency requirement is verified on every push rather than only when someone
+remembers to export it locally.
 
 ## Correctness model
 

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # PostgreSQL is the only service the suite needs: the Redis and Kafka
+    # adapters are covered by unit tests with fakes, while every transaction,
+    # lock and constraint assertion runs against a real database. Adding
+    # brokers here would slow the run without verifying anything more.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pooleno
+          POSTGRES_PASSWORD: pooleno
+          POSTGRES_DB: pooleno
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pooleno -d pooleno"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # Without this the integration suites self-skip and the run reports green
+      # with the concurrency requirement unverified. Keep it set.
+      TEST_DATABASE_URL: postgresql://pooleno:pooleno@localhost:5432/pooleno_test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create the dedicated test database
+        # The integration suites refuse to run against a database whose name does
+        # not end in `_test`, and drop the public schema on every boot. Locally
+        # this database comes from docker-entrypoint-initdb.d, which a CI service
+        # container never runs.
+        run: |
+          PGPASSWORD=pooleno psql -h localhost -U pooleno -d pooleno \
+            -c "SELECT 'CREATE DATABASE pooleno_test' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pooleno_test')\gexec"
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: nrwl/nx-set-shas@v4
+
+      - name: Lint, typecheck and build
+        run: pnpm nx run-many -t lint typecheck build
+
+      # `--runInBand` is passed only to `test`. Forwarding it to `lint` or
+      # `build` fails those targets, which is why this is a separate step.
+      # Serial execution is deliberate: the integration suites drop and rebuild
+      # the public schema of one shared database.
+      - name: Test
+        run: pnpm nx run-many -t test -- --runInBand

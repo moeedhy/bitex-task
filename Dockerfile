@@ -3,7 +3,7 @@ WORKDIR /workspace
 RUN corepack enable
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm nx run api:build
+RUN pnpm nx run @bitex/api:build
 # Self-contained production dependency tree for the api only, so the runtime
 # image does not carry the workspace's build toolchain.
 # --legacy: the workspace does not use injected dependencies, and the app bundle

@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "nx": {
-    "name": "api",
+    "name": "@bitex/api",
     "targets": {
       "build": {
         "executor": "nx:run-commands",
@@ -64,15 +64,15 @@
           "build"
         ],
         "options": {
-          "buildTarget": "api:build",
+          "buildTarget": "@bitex/api:build",
           "runBuildTargetDependencies": false
         },
         "configurations": {
           "development": {
-            "buildTarget": "api:build:development"
+            "buildTarget": "@bitex/api:build:development"
           },
           "production": {
-            "buildTarget": "api:build:production"
+            "buildTarget": "@bitex/api:build:production"
           }
         }
       },

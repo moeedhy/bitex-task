@@ -16,7 +16,7 @@
     }
   },
   "nx": {
-    "name": "wallet",
+    "name": "@bitex/wallet",
     "tags": [
       "type:module",
       "scope:wallet"
