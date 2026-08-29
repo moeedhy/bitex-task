@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { encodeIntegrationEvent } from '@bitex/platform';
+import { CORRELATION_ID_HEADER } from '../../observability/correlation-id.middleware.js';
 import { Logger } from '@nestjs/common';
 import type { Producer } from 'kafkajs';
 import type { Pool, PoolClient } from 'pg';
@@ -11,6 +12,7 @@ export interface OutboxRow {
   aggregate_id: string;
   payload: Record<string, unknown>;
   occurred_at: Date;
+  correlation_id: string | null;
 }
 
 export interface OutboxPublisherOptions {
@@ -43,6 +45,7 @@ const DEFAULT_OPTIONS: OutboxPublisherOptions = {
 export function toIntegrationMessage(row: OutboxRow): {
   key: string;
   value: string;
+  headers?: Record<string, string>;
 } {
   return {
     // Keying by aggregate keeps every event for one withdrawal on a single
@@ -56,6 +59,12 @@ export function toIntegrationMessage(row: OutboxRow): {
         payload: row.payload,
       }),
     ),
+    // A header, not a payload field: the correlation id is transport metadata
+    // that no consumer is required to understand, and putting it in the payload
+    // would make it part of the versioned contract.
+    ...(row.correlation_id
+      ? { headers: { [CORRELATION_ID_HEADER]: row.correlation_id } }
+      : {}),
   };
 }
 
@@ -141,6 +150,10 @@ export class OutboxPublisher {
           [row.id, this.publisherId],
         );
         this.logger.log({
+          // Read from the row, not from an async context: the publisher runs on
+          // a timer and belongs to no request. This is the middle link that
+          // makes the chain from HTTP request to settlement traceable.
+          correlationId: row.correlation_id ?? undefined,
           eventId: row.id,
           withdrawalId: row.aggregate_id,
           operation: 'publish-outbox',
@@ -156,6 +169,7 @@ export class OutboxPublisher {
           [row.id, this.publisherId],
         );
         this.logger.warn({
+          correlationId: row.correlation_id ?? undefined,
           eventId: row.id,
           withdrawalId: row.aggregate_id,
           operation: 'publish-outbox',
@@ -223,7 +237,7 @@ export class OutboxPublisher {
          FOR UPDATE SKIP LOCKED
          LIMIT $2
        )
-       RETURNING id, event_type, aggregate_id, payload, occurred_at`,
+       RETURNING id, event_type, aggregate_id, payload, occurred_at, correlation_id`,
       [this.publisherId, this.options.batchSize, this.options.leaseSeconds],
     );
   }

@@ -1,12 +1,11 @@
 import { Module } from '@nestjs/common';
 import { provide, token } from '@bitex/platform/nest';
+import { RATE_LIMITER } from '../http/rate-limit.guard.js';
 import { RedisConnection } from '../adapters/redis/redis-connection.js';
 import { RedisRateLimiter } from '../adapters/redis/redis-rate-limiter.js';
 import { APP_CONFIG } from '../config/config.module.js';
 
 const REDIS = token<RedisConnection>('RedisConnection');
-
-export const RATE_LIMITER = token<RedisRateLimiter>('RateLimiter');
 
 @Module({
   providers: [

@@ -2,6 +2,11 @@ import { errorCode, EventId, isRetryable, WithdrawalId } from '@bitex/platform';
 import { parseWithdrawalExecutionRequested } from '@bitex/withdrawal';
 import type { ExecuteWithdrawal } from '@bitex/withdrawal';
 import { Logger } from '@nestjs/common';
+import { CORRELATION_ID_HEADER } from '../../observability/correlation-id.middleware.js';
+import {
+  currentCorrelationId,
+  runWithRequestContext,
+} from '../../observability/request-context.js';
 import type { Consumer } from 'kafkajs';
 
 /*
@@ -68,10 +73,19 @@ export class WithdrawalExecutionConsumer {
     await this.consumer.subscribe({ topic: this.topic, fromBeginning: false });
     await this.consumer.run({
       eachMessage: async ({ message }) => {
-        await this.handle(
-          message.key?.toString('utf8'),
-          message.value?.toString('utf8') ?? '',
-        );
+        // Re-opens the originating request's context, so every log line the
+        // handler produces — and any failure the filter reports — carries the
+        // same id the caller was given at the HTTP edge.
+        const correlationId =
+          message.headers?.[CORRELATION_ID_HEADER]?.toString('utf8');
+        const handle = () =>
+          this.handle(
+            message.key?.toString('utf8'),
+            message.value?.toString('utf8') ?? '',
+          );
+        await (correlationId
+          ? runWithRequestContext({ correlationId }, handle)
+          : handle());
       },
     });
   }
@@ -101,6 +115,7 @@ export class WithdrawalExecutionConsumer {
       try {
         await this.executeWithdrawal.execute(command);
         this.logger.log({
+          correlationId: currentCorrelationId(),
           eventId: event.eventId,
           withdrawalId: event.withdrawalId,
           userId: event.userId,
@@ -147,6 +162,7 @@ export class WithdrawalExecutionConsumer {
   ): Promise<void> {
     const code = errorCode(error);
     this.logger.error({
+      correlationId: currentCorrelationId(),
       withdrawalId: key,
       operation: 'execute-withdrawal',
       result: 'dead-lettered',

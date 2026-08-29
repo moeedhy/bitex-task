@@ -457,3 +457,65 @@ restricted ACLs is a deployment where topics are provisioned out of band.
 The main topic gets three partitions by default. Messages are keyed by
 `withdrawalId`, so one aggregate's lifecycle stays on one partition however many
 there are; the DLQ gets one, because ordering across dead letters means nothing.
+
+## 45. Three roles, three types: application result, wire DTO, stored record
+
+`RequestWithdrawalResult` served all three at once — the use case's return
+value, the HTTP response body, and the `response_payload` JSONB read back on
+every replay. Any change to the workflow's result was therefore silently a
+change to a stored format that rows on disk do not have, and to a wire contract
+clients already parse.
+
+- The application returns `RequestWithdrawalResult`, free to change.
+- `apps/api/src/http/dto/` holds the wire DTOs and their mappers. Returning an
+  application object from a controller makes every one of its fields a published
+  API field by default; there was no seam at the driving edge at all.
+- `StoredIdempotentResponse` carries a `version`. A record this build cannot
+  faithfully reproduce — no version, a newer one, an unknown status — raises the
+  integrity alarm rather than answering a replay with a half-understood record
+  under the caller's key.
+
+## 46. Rate limiting is a guard behind a port
+
+It is a cross-cutting transport concern: it runs before the body is trusted, it
+has one answer, and it has nothing to do with withdrawals. In the handler it
+meant the controller injected the concrete `RedisRateLimiter` and would have had
+to be edited to protect a second endpoint.
+
+The guard depends on a `RateLimiter` interface declared at the HTTP edge that
+needs it; Redis is one way to answer it. A request with no usable subject is
+passed through rather than rate-limited — answering 429 for what is really a
+malformed request is the schema's job to reject, not this guard's.
+
+## 47. `correlationId` propagates through the asynchronous half
+
+It was generated in `main.ts` and died at the controller — the half of the flow
+that least needs it. What needed it was the outbox row, the Kafka header and the
+consumer log: correlating a customer's report with the settlement that answered
+it otherwise means matching timestamps by eye across three logs.
+
+`AsyncLocalStorage` rather than a request-scoped provider, because the
+asynchronous half has no request: the publisher runs on a timer and the consumer
+on a broker callback, and a request-scoped Nest provider reaches neither. The
+middleware is registered through `configure()` rather than `app.use`, so the
+store actually encloses the handler.
+
+It travels as a **Kafka header, not a payload field**: transport metadata no
+consumer is required to understand, and putting it in the payload would make it
+part of the versioned contract. The publisher reads it from the row rather than
+from a context it does not have.
+
+`outbox_events.correlation_id` is nullable on purpose — recovery re-publishes an
+intent that belongs to no request.
+
+Verified end to end: a request carrying `x-correlation-id: trace-me-42` appears
+on the response, on the outbox row, in the publisher's line and in the
+consumer's, across two entirely different execution contexts.
+
+## 48. The migrator spec reads the migrations directory
+
+It hardcoded three filenames and `total: 3`, so every new migration was a
+two-file change and a forgotten update produced a failing test that said nothing
+about the property under protection. The property is "every file, in filename
+order, applied and recorded" — including `001` on an untracked database, which
+is why each migration must stay idempotent.

@@ -13,6 +13,7 @@ const row = (overrides: Partial<OutboxRow> = {}): OutboxRow => ({
   aggregate_id: WITHDRAWAL_ID,
   payload: { withdrawalId: WITHDRAWAL_ID, amount: '100' },
   occurred_at: new Date('2026-08-15T10:00:00.000Z'),
+  correlation_id: null,
   ...overrides,
 });
 
@@ -107,5 +108,34 @@ describe('OutboxPublisher timer safety', () => {
     await publisher.start();
     await publisher.stop();
     await expect(publisher.stop()).resolves.toBeUndefined();
+  });
+
+  describe('correlation', () => {
+    it('carries the originating request id as a Kafka header', () => {
+      const message = toIntegrationMessage(row({ correlation_id: 'corr-1' }));
+
+      expect(message.headers).toEqual({ 'x-correlation-id': 'corr-1' });
+    });
+
+    /**
+     * Recovery re-publishes an intent that belongs to no request, and rows
+     * written before the column existed have no id. Neither should produce a
+     * header at all rather than an empty one.
+     */
+    it('sends no header when there is nothing to correlate', () => {
+      expect(toIntegrationMessage(row()).headers).toBeUndefined();
+    });
+
+    /**
+     * A header, not a payload field: the correlation id is transport metadata
+     * that no consumer must understand, and putting it in the payload would
+     * make it part of the versioned contract.
+     */
+    it('keeps the correlation id out of the versioned payload', () => {
+      const message = toIntegrationMessage(row({ correlation_id: 'corr-1' }));
+
+      expect(JSON.parse(message.value)).not.toHaveProperty('correlationId');
+      expect(message.value).not.toContain('corr-1');
+    });
   });
 });

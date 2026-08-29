@@ -9,6 +9,7 @@ import {
 import type { Response } from 'express';
 import { ZodError } from 'zod';
 import { errorCode as codeOf, errorMessage } from '@bitex/platform';
+import { currentCorrelationId } from '../observability/request-context.js';
 import type { ApiErrorCode } from './api-error-code.js';
 
 export interface ApiErrorBody {
@@ -109,9 +110,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
     const http = host.switchToHttp();
     const response = http.getResponse<Response>();
-    const correlationId = http.getRequest<{
-      headers?: Record<string, unknown>;
-    }>()?.headers?.['x-correlation-id'];
+    const correlationId = currentCorrelationId();
 
     const body = this.toBody(exception);
 

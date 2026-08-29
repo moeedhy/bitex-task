@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Pool } from 'pg';
 import { SchemaMigrator } from './schema-migrator.js';
@@ -9,9 +9,18 @@ const describePostgres = process.env.TEST_DATABASE_URL
 
 describePostgres('SchemaMigrator', () => {
   const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-  const migrator = new SchemaMigrator(
-    join(__dirname, '../database/migrations'),
-  );
+  const migrationsDir = join(__dirname, '../database/migrations');
+  const migrator = new SchemaMigrator(migrationsDir);
+
+  /**
+   * Read from disk rather than listed here. What matters is that *every* file
+   * is applied, in filename order, and recorded — not which four exist today.
+   * A hardcoded list makes adding a migration a two-file change and, worse,
+   * turns a forgotten update into a failing test that says nothing about the
+   * property being protected.
+   */
+  const expectedMigrations = async () =>
+    (await readdir(migrationsDir)).filter((f) => f.endsWith('.sql')).sort();
 
   beforeAll(async () => {
     const database = await pool.query<{ current_database: string }>(
@@ -28,17 +37,16 @@ describePostgres('SchemaMigrator', () => {
 
   afterAll(async () => pool.end());
 
-  it('applies every migration to an empty database', async () => {
+  it('applies every migration to an empty database, in filename order', async () => {
+    const expected = await expectedMigrations();
+
     const applied = await migrator.run(pool);
 
-    expect(applied).toEqual([
-      '001_initial.sql',
-      '002_domain_aggregate_refactor.sql',
-      '003_operational_indexes.sql',
-    ]);
+    expect(applied).toEqual(expected);
+    expect(applied[0]).toBe('001_initial.sql');
     await expect(
       pool.query('SELECT count(*)::int AS total FROM schema_migrations'),
-    ).resolves.toMatchObject({ rows: [{ total: 3 }] });
+    ).resolves.toMatchObject({ rows: [{ total: expected.length }] });
   });
 
   it('is a no-op on a database that is already current', async () => {
@@ -66,11 +74,10 @@ describePostgres('SchemaMigrator', () => {
 
     const applied = await migrator.run(pool);
 
-    expect(applied).toEqual([
-      '001_initial.sql',
-      '002_domain_aggregate_refactor.sql',
-      '003_operational_indexes.sql',
-    ]);
+    // Every file, including 001 -- which is why each migration has to stay
+    // idempotent: on an untracked database the migrator has no way to know
+    // 001 already ran, so it runs it again.
+    expect(applied).toEqual(await expectedMigrations());
     await expect(
       pool.query(
         `SELECT column_name FROM information_schema.columns

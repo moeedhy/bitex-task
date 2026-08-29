@@ -75,6 +75,7 @@ describe('WithdrawalExecutionRequested contract', () => {
     aggregate_id: event.aggregateId,
     payload: event.payload,
     occurred_at: event.occurredAt,
+    correlation_id: 'corr-1',
   });
 
   it('produces a message the consumer accepts and acts on', async () => {

@@ -5,11 +5,15 @@ import type {
   WithdrawalIdempotencyPort,
 } from '@bitex/withdrawal';
 import type { TransactionalClient } from '../shared/transactional-client.js';
+import {
+  fromStoredResponse,
+  toStoredResponse,
+} from './stored-idempotent-response.js';
 
 interface IdempotencyRow {
   request_fingerprint: string;
   status: 'IN_PROGRESS' | 'COMPLETED';
-  response_payload: RequestWithdrawalResult | null;
+  response_payload: unknown;
 }
 
 /**
@@ -87,22 +91,17 @@ export class PostgresWithdrawalIdempotency
     if (row.request_fingerprint !== input.fingerprint) {
       return { kind: 'CONFLICT' };
     }
-    if (row.status !== 'COMPLETED' || !row.response_payload) {
+    if (row.status !== 'COMPLETED') {
       throw new CorruptIdempotencyRecordError(input.key);
     }
-    // Rebuilt field by field rather than returned as stored: `jsonb` does not
-    // preserve key order, so echoing the raw column would make a replay
-    // logically identical but byte-different from the original response.
-    const stored = row.response_payload;
-    return {
-      kind: 'REPLAY',
-      result: {
-        withdrawalId: stored.withdrawalId,
-        status: stored.status,
-        asset: stored.asset,
-        amount: stored.amount,
-      },
-    };
+    const result = fromStoredResponse(row.response_payload);
+    if (!result) {
+      // Answering a replay from a record this build cannot faithfully
+      // reproduce would return a different withdrawal's shape under the
+      // caller's key. Refusing is the safe half of that choice.
+      throw new CorruptIdempotencyRecordError(input.key);
+    }
+    return { kind: 'REPLAY', result };
   }
 
   async complete(key: string, result: RequestWithdrawalResult): Promise<void> {
@@ -111,7 +110,7 @@ export class PostgresWithdrawalIdempotency
        SET status = 'COMPLETED', withdrawal_id = $2, response_payload = $3,
            completed_at = now()
        WHERE operation = 'REQUEST_WITHDRAWAL' AND idempotency_key = $1`,
-      [key, result.withdrawalId, JSON.stringify(result)],
+      [key, result.withdrawalId, JSON.stringify(toStoredResponse(result))],
     );
     if (updated.rowCount !== 1) {
       // The claim this transaction wrote must still be here. If it is not, the

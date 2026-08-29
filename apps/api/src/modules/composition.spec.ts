@@ -15,8 +15,8 @@ import {
   RecoverStuckWithdrawals,
   RequestWithdrawal,
 } from '@bitex/withdrawal';
-import { AppModule } from '../app/app.module.js';
-import { WithdrawalsController } from '../app/withdrawals.controller.js';
+import { AppModule } from '../http/app.module.js';
+import { WithdrawalsController } from '../http/withdrawals.controller.js';
 import { APP_CONFIG } from '../config/config.module.js';
 
 /**
