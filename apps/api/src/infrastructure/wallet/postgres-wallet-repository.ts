@@ -3,6 +3,7 @@ import type { Asset } from '@bitex/platform';
 import { WalletAccount, WalletNotFoundError } from '@bitex/wallet';
 import type { WalletRepository } from '@bitex/wallet';
 import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import { requireSingleRow } from '../shared/stale-write.js';
 
 interface WalletRow {
   id: string;
@@ -43,7 +44,7 @@ export class PostgresWalletRepository implements WalletRepository {
 
   async save(wallet: WalletAccount): Promise<void> {
     const snapshot = wallet.toSnapshot();
-    await this.transaction.client().query(
+    const result = await this.transaction.client().query(
       `UPDATE wallets
        SET balance_atomic = $2, reserved_atomic = $3, updated_at = now()
        WHERE id = $1`,
@@ -53,6 +54,7 @@ export class PostgresWalletRepository implements WalletRepository {
         snapshot.reservedBalance.toAtomicUnits().toString(),
       ],
     );
+    requireSingleRow(result, 'wallets', snapshot.id);
   }
 
   private requireWallet(row: WalletRow | undefined, identity: string) {

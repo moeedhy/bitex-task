@@ -49,7 +49,10 @@ export class WithdrawalsController {
   ) {
     if (!idempotencyKey?.trim()) {
       throw new HttpException(
-        'Idempotency-Key header is required.',
+        {
+          errorCode: 'IDEMPOTENCY_KEY_REQUIRED',
+          message: 'Idempotency-Key header is required.',
+        },
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -57,7 +60,10 @@ export class WithdrawalsController {
     const amount = Money.parse(body.amount, resolveAsset(body.asset));
     if (!(await this.rateLimiter.allow(body.userId))) {
       throw new HttpException(
-        'Withdrawal rate limit exceeded.',
+        {
+          errorCode: 'RATE_LIMIT_EXCEEDED',
+          message: 'Withdrawal rate limit exceeded.',
+        },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }

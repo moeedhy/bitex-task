@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import type { OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
+import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Kafka } from 'kafkajs';
 import { ExecuteWithdrawal, RecoverStuckWithdrawals } from '@bitex/withdrawal';
 import { DatabaseConnection } from '../infrastructure/shared/database-connection.js';
@@ -20,8 +20,17 @@ const topic = () =>
  * They are gated by `ENABLE_MESSAGING` so tests and local HTTP-only runs do not
  * require a broker. Shutdown is ordered: consumers and workers stop before the
  * producers they might still be writing through.
+ *
+ * Teardown deliberately runs in `onModuleDestroy`, the *earliest* shutdown hook.
+ * Nest's order is `onModuleDestroy` -> `beforeApplicationShutdown` -> HTTP close
+ * -> `onApplicationShutdown`, and everything here holds a PostgreSQL connection:
+ * the consumer executes withdrawals, the publisher polls the outbox every
+ * second, the worker scans for stuck rows. Closing the pool first — which is
+ * what happened while this ran in `onApplicationShutdown` and the pool closed in
+ * `onModuleDestroy` — leaves all three querying a dead pool, and the publisher's
+ * unguarded interval then takes the process down mid-shutdown.
  */
-export class MessagingLifecycle implements OnModuleInit, OnApplicationShutdown {
+export class MessagingLifecycle implements OnModuleInit, OnModuleDestroy {
   private readonly enabled = process.env.ENABLE_MESSAGING === 'true';
 
   constructor(
@@ -41,7 +50,7 @@ export class MessagingLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.recovery.start();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  async onModuleDestroy(): Promise<void> {
     if (!this.enabled) {
       return;
     }

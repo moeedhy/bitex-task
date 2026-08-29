@@ -5,6 +5,7 @@ import type {
   WalletReservationSnapshot,
 } from '@bitex/wallet';
 import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import { requireSingleRow } from '../shared/stale-write.js';
 
 interface ReservationRow {
   id: string;
@@ -63,11 +64,12 @@ export class PostgresWalletReservationRepository
 
   async save(reservation: WalletReservation): Promise<void> {
     const snapshot = reservation.toSnapshot();
-    await this.transaction.client().query(
+    const result = await this.transaction.client().query(
       `UPDATE wallet_reservations
        SET status = $2, updated_at = now()
        WHERE id = $1`,
       [snapshot.id, snapshot.status],
     );
+    requireSingleRow(result, 'wallet_reservations', snapshot.id);
   }
 }

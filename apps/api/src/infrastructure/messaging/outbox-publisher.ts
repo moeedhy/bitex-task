@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { Producer } from 'kafkajs';
 import type { Pool, PoolClient } from 'pg';
+import { errorCode, errorMessage } from '../shared/error-context.js';
 
 export interface OutboxRow {
   id: string;
@@ -75,17 +76,46 @@ export class OutboxPublisher {
   }
 
   async start(): Promise<void> {
+    if (this.timer) {
+      // A second start() would orphan the first interval with no handle to
+      // clear it, leaving a timer polling the outbox until the process dies.
+      return;
+    }
     await this.producer.connect();
-    this.timer = setInterval(
-      () => void this.publishOnce(),
-      this.options.intervalMs,
-    );
+    this.timer = setInterval(() => void this.tick(), this.options.intervalMs);
     this.timer.unref();
   }
 
   async stop(): Promise<void> {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) {
+      clearInterval(this.timer);
+      // Cleared *and* forgotten, so stop()/start()/stop() stays balanced.
+      this.timer = undefined;
+    }
     await this.producer.disconnect();
+  }
+
+  /**
+   * The only thing the interval calls, and the reason it exists.
+   *
+   * `setInterval(() => void this.publishOnce(), …)` discards the promise, so any
+   * rejection inside `publishOnce` — a pool error from `claimBatch`, a failed
+   * bookkeeping UPDATE in the catch path, a prune against a closed pool — became
+   * an unhandled rejection and, under Node's default `--unhandled-rejections=throw`,
+   * killed the API. A transient database blip is not a reason to lose the
+   * process, and the next tick is one second away.
+   */
+  private async tick(): Promise<void> {
+    try {
+      await this.publishOnce();
+    } catch (error) {
+      this.logger.error({
+        operation: 'publish-outbox',
+        result: 'tick-failed',
+        errorCode: errorCode(error),
+        message: errorMessage(error),
+      });
+    }
   }
 
   async publishOnce(): Promise<number> {
@@ -122,7 +152,8 @@ export class OutboxPublisher {
           withdrawalId: row.aggregate_id,
           operation: 'publish-outbox',
           result: 'retry-scheduled',
-          errorCode: (error as Error).name,
+          errorCode: errorCode(error),
+          message: errorMessage(error),
         });
       }
     }

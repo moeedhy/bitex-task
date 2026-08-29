@@ -9,6 +9,7 @@ import type {
   WithdrawalSnapshot,
 } from '@bitex/withdrawal';
 import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import { requireSingleRow } from '../shared/stale-write.js';
 
 interface WithdrawalRow {
   id: string;
@@ -71,7 +72,7 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
 
   async save(withdrawal: Withdrawal): Promise<void> {
     const row = withdrawal.toSnapshot();
-    await this.transaction.client().query(
+    const result = await this.transaction.client().query(
       `UPDATE withdrawals
        SET status = $2, transaction_reference = $3, failure_reason = $4,
            updated_at = $5
@@ -84,6 +85,7 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
         row.updatedAt,
       ],
     );
+    requireSingleRow(result, 'withdrawals', row.id);
   }
 
   private values(row: WithdrawalSnapshot): unknown[] {

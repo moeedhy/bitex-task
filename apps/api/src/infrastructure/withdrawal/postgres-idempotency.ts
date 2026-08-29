@@ -62,11 +62,22 @@ export class PostgresWithdrawalIdempotency
       return { kind: 'CLAIMED' };
     }
 
+    // Deliberately an unlocked read.
+    //
+    // Reaching this line means the INSERT above conflicted, and `ON CONFLICT DO
+    // NOTHING` already blocked on the unique index until the claiming
+    // transaction resolved — so the row we are about to read is committed, and
+    // a COMPLETED record is never written again. There is nothing left to
+    // serialise against.
+    //
+    // The previous `FOR UPDATE` held that row for the whole outer transaction,
+    // so a client retry-storm on one key queued every duplicate behind a 3s
+    // `lock_timeout` and turned cheap replays into `55P03` failures — the exact
+    // load this table exists to absorb.
     const existing = await client.query<IdempotencyRow>(
       `SELECT request_fingerprint, status, response_payload
        FROM idempotency_records
-       WHERE operation = $1 AND idempotency_key = $2
-       FOR UPDATE`,
+       WHERE operation = $1 AND idempotency_key = $2`,
       [input.operation, input.key],
     );
     const row = existing.rows[0];

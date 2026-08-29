@@ -4,8 +4,10 @@ import { Pool } from 'pg';
 import { Assets, Money } from '@bitex/platform';
 import {
   FinalizeReservation,
+  InsufficientAvailableBalanceError,
   ReleaseReservation,
   ReserveFunds,
+  WalletAccount,
 } from '@bitex/wallet';
 import {
   ExecuteWithdrawal,
@@ -45,7 +47,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     }
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
     await new SchemaMigrator(
-      join(process.cwd(), 'src/infrastructure/database/migrations'),
+      join(__dirname, '../database/migrations'),
     ).run(pool);
   });
 
@@ -100,9 +102,15 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     expect(
       results.filter((result) => result.status === 'fulfilled'),
     ).toHaveLength(1);
-    expect(
-      results.filter((result) => result.status === 'rejected'),
-    ).toHaveLength(1);
+    const rejected = results.filter((result) => result.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    // Asserting *why* the loser lost, not just that it lost. Without this a
+    // `lock_timeout` expiry on the contended wallet row would satisfy the count
+    // assertions identically, and the test would keep passing while proving
+    // nothing about the balance invariant it exists to protect.
+    expect(rejected[0]?.reason).toBeInstanceOf(
+      InsufficientAvailableBalanceError,
+    );
     const wallet = await pool.query(
       'SELECT reserved_atomic FROM wallets WHERE id = $1',
       ['wallet-1'],
@@ -211,15 +219,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
       [requested.withdrawalId],
     );
 
-    const recovered = await new RecoverStuckWithdrawals({
-      transactionRunner: transaction,
-      stuckWithdrawals: new PostgresStuckWithdrawalQuery(transaction),
-      outbox: new PostgresOutbox(transaction),
-      eventIdGenerator: { next: randomUUID },
-      clock: { now: () => new Date() },
-      processingTimeoutMs: 15 * 60 * 1000,
-      batchSize: 50,
-    }).execute();
+    const recovered = await recoverStuck();
 
     expect(recovered.rescheduled).toEqual([requested.withdrawalId]);
     const events = await pool.query(
@@ -233,6 +233,76 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
       amount: '30',
     });
   });
+
+  /**
+   * Before the `rowCount` guard, an `UPDATE … WHERE id = $1` that matched no row
+   * committed silently. `ReserveFunds` inserts the reservation regardless, so
+   * the transaction would commit a reservation against a wallet whose
+   * `reserved_atomic` was never incremented — funds reserved according to one
+   * table and available according to the other, with no error anywhere.
+   */
+  /**
+   * The amplification regression. Recovery never moved `updated_at`, and nothing
+   * else does for a withdrawal wedged in PROCESSING, so the row stayed eligible
+   * on every tick: one re-published event per replica per 60s, indefinitely.
+   */
+  it('does not re-publish the same stranded withdrawal on the next cycle', async () => {
+    const requested = await request('rearm-key', '30');
+    await pool.query(
+      `UPDATE withdrawals
+       SET status = 'PROCESSING', updated_at = now() - interval '1 hour'
+       WHERE id = $1`,
+      [requested.withdrawalId],
+    );
+
+    const first = await recoverStuck();
+    const second = await recoverStuck();
+
+    expect(first.rescheduled).toEqual([requested.withdrawalId]);
+    expect(second.rescheduled).toEqual([]);
+    await expect(
+      pool.query('SELECT id FROM outbox_events WHERE aggregate_id = $1', [
+        requested.withdrawalId,
+      ]),
+    ).resolves.toMatchObject({ rowCount: 2 });
+  });
+
+  it('refuses to commit a wallet update that matched no row', async () => {
+    // A wallet the database has never seen. Saving it must fail rather than
+    // report success on an UPDATE that touched nothing. Deleting the real row
+    // concurrently would be a more literal reproduction but would simply
+    // deadlock against the transaction's own `FOR UPDATE` lock.
+    const orphan = WalletAccount.reconstitute({
+      id: randomUUID(),
+      userId: 'user-123',
+      asset: Assets.USDT,
+      balance: Money.parse('100', Assets.USDT),
+      reservedBalance: Money.zero(Assets.USDT),
+    });
+
+    await expect(
+      transaction.run(() => walletRepository.save(orphan)),
+    ).rejects.toMatchObject({ code: 'STALE_WRITE' });
+
+    // The guard aborts the transaction, so nothing partial is left behind.
+    await expect(
+      pool.query('SELECT reserved_atomic FROM wallets WHERE id = $1', [
+        'wallet-1',
+      ]),
+    ).resolves.toMatchObject({ rows: [{ reserved_atomic: '0' }] });
+  });
+
+  function recoverStuck() {
+    return new RecoverStuckWithdrawals({
+      transactionRunner: transaction,
+      stuckWithdrawals: new PostgresStuckWithdrawalQuery(transaction),
+      outbox: new PostgresOutbox(transaction),
+      eventIdGenerator: { next: randomUUID },
+      clock: { now: () => new Date() },
+      processingTimeoutMs: 15 * 60 * 1000,
+      batchSize: 50,
+    }).execute();
+  }
 
   function request(idempotencyKey: string, amount: string) {
     return useCase.execute({
