@@ -9,7 +9,7 @@ services:
       - '${POSTGRES_PORT:-55433}:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./apps/api/src/infrastructure/database/000_create_test_database.sql:/docker-entrypoint-initdb.d/000_create_test_database.sql:ro
+      - ./apps/api/src/adapters/database/000_create_test_database.sql:/docker-entrypoint-initdb.d/000_create_test_database.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U pooleno -d pooleno']
       interval: 3s
@@ -55,6 +55,14 @@ services:
 
   application:
     build: .
+    # Reads .env for the operator's own overrides -- rate limits, timeouts,
+    # batch sizes. Without this the file was decorative: it documented
+    # twenty-five variables that only took effect if exported by hand.
+    env_file:
+      - path: .env
+        required: false
+    # These override .env, because the in-network addresses are not the host
+    # ports .env points at.
     environment:
       PORT: 3000
       DATABASE_URL: postgresql://pooleno:pooleno@postgres:5432/pooleno

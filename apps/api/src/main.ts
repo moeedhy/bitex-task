@@ -2,7 +2,9 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { errorCode, errorMessage } from '@bitex/platform';
 import { AppModule } from './app/app.module.js';
+import { APP_CONFIG } from './config/config.module.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -17,16 +19,16 @@ async function bootstrap() {
     response.setHeader('x-correlation-id', correlationId);
     next();
   });
-  const port = process.env.PORT || 3000;
-  await app.listen(port);
+  const config = app.get(APP_CONFIG);
+  await app.listen(config.PORT);
 }
 
 bootstrap().catch((error) => {
   new Logger('Bootstrap').error({
     operation: 'bootstrap',
     result: 'failed',
-    errorCode: (error as Error).name,
-    message: (error as Error).message,
+    errorCode: errorCode(error),
+    message: errorMessage(error),
   });
   process.exitCode = 1;
 });

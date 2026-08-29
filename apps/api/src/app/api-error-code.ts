@@ -10,9 +10,9 @@ import type {
   WithdrawalApplicationErrorCode,
   WithdrawalDomainErrorCode,
 } from '@bitex/withdrawal';
-import type { MissingTransactionError } from '../infrastructure/shared/postgres-transaction-runner.js';
-import type { StaleWriteError } from '../infrastructure/shared/stale-write.js';
-import type { CorruptIdempotencyRecordError } from '../infrastructure/withdrawal/postgres-idempotency.js';
+import type { MissingTransactionError } from '../adapters/shared/postgres-transaction-runner.js';
+import type { StaleWriteError } from '../adapters/shared/stale-write.js';
+import type { CorruptIdempotencyRecordError } from '../adapters/withdrawal/postgres-idempotency.js';
 
 /**
  * Failures raised by this application's own adapters, as opposed to by the

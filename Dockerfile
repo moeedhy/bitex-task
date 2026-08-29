@@ -18,7 +18,7 @@ ENV NODE_ENV=production \
 COPY --from=build /deploy/node_modules ./node_modules
 COPY --from=build /workspace/apps/api/dist ./dist
 # Migrations are applied by the application at startup, so they ship with it.
-COPY --from=build /workspace/apps/api/src/infrastructure/database ./sql
+COPY --from=build /workspace/apps/api/src/adapters/database ./sql
 EXPOSE 3000
 USER node
 CMD ["node", "dist/main.js"]

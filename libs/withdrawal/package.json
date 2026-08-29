@@ -13,6 +13,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./nest": {
+      "@bitex/source": "./src/nest/index.ts",
+      "types": "./dist/nest/index.d.ts",
+      "import": "./dist/nest/index.js",
+      "default": "./dist/nest/index.js"
     }
   },
   "nx": {
@@ -26,5 +32,11 @@
     "@bitex/platform": "workspace:*",
     "tslib": "^2.3.0",
     "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^11.2.3"
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.2.3"
   }
 }

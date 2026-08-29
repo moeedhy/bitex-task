@@ -1,9 +1,9 @@
 import type { ProcessedEventPort } from '@bitex/withdrawal';
-import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import type { TransactionalClient } from '../shared/transactional-client.js';
 
 export class PostgresProcessedEvents implements ProcessedEventPort {
   constructor(
-    private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
+    private readonly transaction: TransactionalClient,
   ) {}
 
   async has(eventId: string): Promise<boolean> {

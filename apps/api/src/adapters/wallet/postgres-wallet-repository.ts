@@ -3,7 +3,7 @@ import type { Asset } from '@bitex/platform';
 import { WalletAccount, WalletNotFoundError } from '@bitex/wallet';
 import { WalletId } from '@bitex/wallet';
 import type { WalletRepository } from '@bitex/wallet';
-import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import type { TransactionalClient } from '../shared/transactional-client.js';
 import { requireSingleRow } from '../shared/stale-write.js';
 
 interface WalletRow {
@@ -18,7 +18,7 @@ const columns = 'id, user_id, asset, balance_atomic, reserved_atomic';
 
 export class PostgresWalletRepository implements WalletRepository {
   constructor(
-    private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
+    private readonly transaction: TransactionalClient,
   ) {}
 
   async getForUpdate(userId: UserId, asset: Asset): Promise<WalletAccount> {

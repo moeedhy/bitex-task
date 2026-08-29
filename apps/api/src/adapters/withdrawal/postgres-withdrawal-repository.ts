@@ -14,7 +14,7 @@ import type {
   WithdrawalRepository,
   WithdrawalSnapshot,
 } from '@bitex/withdrawal';
-import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import type { TransactionalClient } from '../shared/transactional-client.js';
 import { requireSingleRow } from '../shared/stale-write.js';
 
 interface WithdrawalRow {
@@ -37,7 +37,7 @@ const columns = `id, user_id, asset, amount_atomic, destination_address,
 
 export class PostgresWithdrawalRepository implements WithdrawalRepository {
   constructor(
-    private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
+    private readonly transaction: TransactionalClient,
   ) {}
 
   async add(withdrawal: Withdrawal): Promise<void> {

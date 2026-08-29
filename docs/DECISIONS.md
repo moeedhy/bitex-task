@@ -356,3 +356,104 @@ without anyone deciding they should be.
 The fingerprint is the clearest case: §14 of this document argues that the
 fingerprinting policy must not be reproducible outside the workflow that owns
 it, and the barrel published it anyway.
+
+## 40. Each context ships its own Nest module
+
+`libs/*/src/nest/` holds a `DynamicModule` exported at the `./nest` subpath.
+Each context declares typed tokens for the ports it needs, constructs its own
+use cases from them, and exports only those use cases. The application supplies
+adapters and nothing else.
+
+**This supersedes the rationale recorded in `ARCHITECTURE.md`,** which justified
+hand-written `useFactory` providers on the grounds that "the libraries need no
+NestJS import to be injectable". That property still holds where it matters:
+`@nestjs/common` appears in `src/nest/` and nowhere else, so the domain and
+application layers remain framework-free and the brief's requirement stays
+literally true. What changed is the conclusion drawn from it — a library that
+owns a boundary should own its own composition, because the alternative was
+`apps/api/src/composition/`: five files and roughly 490 lines of wiring, 31% of
+the size of the entire domain, in which adding one dependency to a use case was
+a three-part edit in a distant file.
+
+`@nestjs/common` is declared in both `peerDependencies` and `devDependencies`.
+`@nx/dependency-checks` computes production dependencies as
+`dependencies + peerDependencies`, so `devDependencies` alone reports it
+missing; and the application must own the framework version.
+
+Three toolchain mechanics were verified before this landed rather than assumed:
+the `./nest` subpath resolves under `nodenext` with the `@bitex/source`
+condition (tsc), from `dist` (webpack — checked in the emitted sourcemap) and
+under Jest; `@nx/enforce-module-boundaries` applies the same `type:`/`scope:`
+tags to a subpath import, confirmed by watching a deliberate
+`@bitex/wallet → @bitex/withdrawal/nest` import fail lint; and `provide()`
+rejects a swapped dependency order at compile time.
+
+## 41. DI is compile-time checked
+
+`token<Value>(description)` is a branded `symbol` that remembers what it
+resolves to; `provide(target, deps, factory)` checks the factory's parameters
+against the tokens in `deps` using a `const` tuple parameter.
+
+Nest's `useFactory` correlates a positional `inject: []` array with positional
+factory parameters *by hand*. This application did that thirty-one times, once
+with five entries. Reordering either side, or changing a token's type, was
+caught by nothing until the container resolved at runtime. It is now a type
+error.
+
+Tokens replace concrete classes as DI keys throughout. A concrete class used as
+a token makes the binding unoverridable in a test and quietly re-introduces the
+dependency on the implementation the port existed to remove.
+
+`Clock` and the id generators are real providers. `const clock = { now: () => new Date() }`
+sat at module scope in the composition root, closed over by three use-case
+factories — bypassing DI entirely, so nothing could substitute it.
+
+The Withdrawal context is composed **once**, in `WithdrawalContextModule`, and
+re-exported. Nest keys dynamic modules by generated metadata, and two
+structurally similar `forRoot` calls are not a guarantee of one instance — which
+here would mean two transaction runners and therefore two `AsyncLocalStorage`
+scopes.
+
+## 42. `TransactionalClient` replaces `Pick<PostgresTransactionRunner, 'client'>`
+
+Eight adapters depended on the *shape of a concrete class*, which is the
+coupling ports exist to remove. The runner is now published under two tokens:
+`TRANSACTION_RUNNER` (the platform port, all the libraries can see) and
+`TRANSACTIONAL_CLIENT` (the client accessor, which never leaves the adapter
+layer). Two views of one instance, neither of them the class.
+
+## 43. Configuration is one validated object
+
+`apps/api/src/config/app-config.ts` parses every environment variable with zod at
+boot. There were twenty-five `process.env` reads across five files, several
+inside `@Module` decorators — which means they ran at import time, before a test
+could set them, and were invisible to anyone reading the module's providers.
+
+Five production knobs had no environment path at all (outbox batch size, lease
+and prune interval; consumer attempts and backoff). All five are now
+configurable.
+
+`.env.example` was decorative: nothing loaded it, and it documented a
+`DATABASE_URL` default pointing at a port compose does not publish. Compose now
+reads it through `env_file`, and it is reconciled against the schema.
+Misconfiguration fails at startup naming the variable, instead of surfacing as a
+connection timeout in production.
+
+## 44. Kafka topics are provisioned explicitly
+
+Found by booting the rewired application against a fresh broker: it crashed with
+"This server does not host this topic-partition". Auto-creation is either
+disabled or loses the race with the producer's first metadata request — and when
+it did win, it created the topic with **one** partition, which meant the
+per-aggregate ordering this design depends on held by accident rather than by
+configuration.
+
+`KafkaTopicProvisioner` creates the topic and its DLQ before anything connects,
+one at a time: `createTopics` rejects the whole call when any topic in it already
+exists, so batching let an existing topic prevent a missing one from being
+created. Failure is logged, not thrown, because a managed cluster with
+restricted ACLs is a deployment where topics are provisioned out of band.
+
+The main topic gets three partitions by default. Messages are keyed by
+`withdrawalId`, so one aggregate's lifecycle stays on one partition however many
+there are; the DLQ gets one, because ordering across dead letters means nothing.

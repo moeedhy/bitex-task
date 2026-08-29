@@ -5,15 +5,18 @@ import {
   Headers,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   Logger,
   Param,
   Post,
 } from '@nestjs/common';
 import { Money, resolveAsset, UserId, WithdrawalId } from '@bitex/platform';
-import { GetWithdrawal, RequestWithdrawal } from '@bitex/withdrawal';
+import type { GetWithdrawal, RequestWithdrawal } from '@bitex/withdrawal';
+import { GET_WITHDRAWAL, REQUEST_WITHDRAWAL } from '@bitex/withdrawal/nest';
 import { z } from 'zod';
-import { RedisRateLimiter } from '../infrastructure/redis/redis-rate-limiter.js';
+import type { RedisRateLimiter } from '../adapters/redis/redis-rate-limiter.js';
+import { RATE_LIMITER } from '../modules/redis.module.js';
 
 const RequestSchema = z.strictObject({
   userId: z.string().trim().min(1).max(128),
@@ -36,9 +39,10 @@ export class WithdrawalsController {
   private readonly logger = new Logger(WithdrawalsController.name);
 
   constructor(
+    @Inject(REQUEST_WITHDRAWAL)
     private readonly requestWithdrawal: RequestWithdrawal,
-    private readonly getWithdrawal: GetWithdrawal,
-    private readonly rateLimiter: RedisRateLimiter,
+    @Inject(GET_WITHDRAWAL) private readonly getWithdrawal: GetWithdrawal,
+    @Inject(RATE_LIMITER) private readonly rateLimiter: RedisRateLimiter,
   ) {}
 
   @Post()

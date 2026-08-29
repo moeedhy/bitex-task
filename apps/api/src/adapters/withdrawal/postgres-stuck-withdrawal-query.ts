@@ -3,7 +3,7 @@ import type {
   StuckWithdrawal,
   StuckWithdrawalQueryPort,
 } from '@bitex/withdrawal';
-import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import type { TransactionalClient } from '../shared/transactional-client.js';
 
 interface StuckRow {
   id: string;
@@ -33,7 +33,7 @@ interface StuckRow {
  */
 export class PostgresStuckWithdrawalQuery implements StuckWithdrawalQueryPort {
   constructor(
-    private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
+    private readonly transaction: TransactionalClient,
   ) {}
 
   async findProcessingSince(input: {

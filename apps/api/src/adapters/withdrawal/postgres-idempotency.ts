@@ -4,7 +4,7 @@ import type {
   RequestWithdrawalResult,
   WithdrawalIdempotencyPort,
 } from '@bitex/withdrawal';
-import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import type { TransactionalClient } from '../shared/transactional-client.js';
 
 interface IdempotencyRow {
   request_fingerprint: string;
@@ -35,7 +35,7 @@ export class PostgresWithdrawalIdempotency
   implements WithdrawalIdempotencyPort
 {
   constructor(
-    private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
+    private readonly transaction: TransactionalClient,
   ) {}
 
   /**

@@ -13,7 +13,7 @@ import type {
   WalletReservationRepository,
   WalletReservationSnapshot,
 } from '@bitex/wallet';
-import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
+import type { TransactionalClient } from '../shared/transactional-client.js';
 import { requireSingleRow } from '../shared/stale-write.js';
 
 interface ReservationRow {
@@ -29,7 +29,7 @@ export class PostgresWalletReservationRepository
   implements WalletReservationRepository
 {
   constructor(
-    private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
+    private readonly transaction: TransactionalClient,
   ) {}
 
   async add(reservation: WalletReservation): Promise<void> {
