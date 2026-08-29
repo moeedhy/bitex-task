@@ -1,4 +1,4 @@
-import { Money, resolveAsset } from '@bitex/platform';
+import { Money, resolveAsset, UserId, WithdrawalId } from '@bitex/platform';
 import type {
   StuckWithdrawal,
   StuckWithdrawalQueryPort,
@@ -57,8 +57,8 @@ export class PostgresStuckWithdrawalQuery implements StuckWithdrawalQueryPort {
     return result.rows.map((row) => {
       const asset = resolveAsset(row.asset);
       return {
-        withdrawalId: row.id,
-        userId: row.user_id,
+        withdrawalId: WithdrawalId.parse(row.id),
+        userId: UserId.parse(row.user_id),
         asset: row.asset,
         amount: Money.fromAtomicUnits(
           BigInt(row.amount_atomic),

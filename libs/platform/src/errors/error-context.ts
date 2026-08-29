@@ -8,9 +8,9 @@
  * correlate. The code and the message are both needed to tell "connection
  * refused" apart from "duplicate key".
  *
- * These will be superseded for domain failures by the `CodedError` base class,
- * which carries a typed `code`. They remain the fallback for the driver and
- * transport errors that will never extend it.
+ * `CodedError` covers our own failures. These remain the fallback for the
+ * driver and transport errors that will never extend it, and for the `unknown`
+ * a `catch` block actually receives.
  */
 export function errorCode(error: unknown): string {
   const candidate = error as { code?: unknown; name?: unknown };

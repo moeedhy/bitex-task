@@ -1,22 +1,23 @@
-export class InvalidWithdrawalError extends Error {
+import { CodedError } from '@bitex/platform';
+import type { ErrorCodeOf } from '@bitex/platform';
+
+export class InvalidWithdrawalError extends CodedError {
   readonly code = 'INVALID_WITHDRAWAL' as const;
 
   constructor(message: string) {
     super(message);
-    this.name = 'InvalidWithdrawalError';
   }
 }
 
-export class InvalidWithdrawalAddressError extends Error {
+export class InvalidWithdrawalAddressError extends CodedError {
   readonly code = 'INVALID_WITHDRAWAL_ADDRESS' as const;
 
   constructor(message = 'Withdrawal destination address is invalid.') {
     super(message);
-    this.name = 'InvalidWithdrawalAddressError';
   }
 }
 
-export class InvalidWithdrawalTransitionError extends Error {
+export class InvalidWithdrawalTransitionError extends CodedError {
   readonly code = 'INVALID_WITHDRAWAL_TRANSITION' as const;
 
   constructor(
@@ -26,6 +27,11 @@ export class InvalidWithdrawalTransitionError extends Error {
     super(
       `Cannot transition withdrawal from ${currentStatus} to ${targetStatus}.`,
     );
-    this.name = 'InvalidWithdrawalTransitionError';
   }
 }
+
+export type WithdrawalDomainErrorCode = ErrorCodeOf<
+  | typeof InvalidWithdrawalError
+  | typeof InvalidWithdrawalAddressError
+  | typeof InvalidWithdrawalTransitionError
+>;

@@ -1,10 +1,18 @@
 import { Assets, Money } from '@bitex/platform';
-import type { IntegrationEvent } from '@bitex/platform';
+import type { AnyIntegrationEvent } from '@bitex/platform';
 import { RequestWithdrawal } from '@bitex/withdrawal';
 import { toIntegrationMessage } from './outbox-publisher.js';
 import type { OutboxRow } from './outbox-publisher.js';
 import { WithdrawalExecutionConsumer } from './withdrawal-execution-consumer.js';
 import type { DeadLetterSink } from './withdrawal-execution-consumer.js';
+import { EventId, ReservationId, UserId, WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+const RESERVATION_ID = ReservationId.parse('44444444-4444-4444-8444-444444444444');
+const EVENT_ID = EventId.parse('55555555-5555-4555-8555-555555555555');
 
 /**
  * Producer and consumer are written in different libraries and validated by a
@@ -16,8 +24,8 @@ import type { DeadLetterSink } from './withdrawal-execution-consumer.js';
  * This drives the real event through the real envelope into the real schema.
  */
 describe('WithdrawalExecutionRequested contract', () => {
-  const publishedEvent = async (): Promise<IntegrationEvent> => {
-    const events: IntegrationEvent[] = [];
+  const publishedEvent = async (): Promise<AnyIntegrationEvent> => {
+    const events: AnyIntegrationEvent[] = [];
     const useCase = new RequestWithdrawal({
       transactionRunner: { run: (operation) => operation() },
       idempotency: {
@@ -30,7 +38,7 @@ describe('WithdrawalExecutionRequested contract', () => {
       },
       walletReservation: {
         async reserve() {
-          return { reservationId: 'reservation-1' };
+          return { reservationId: RESERVATION_ID };
         },
       },
       withdrawals: {
@@ -49,14 +57,14 @@ describe('WithdrawalExecutionRequested contract', () => {
           events.push(event);
         },
       },
-      withdrawalIdGenerator: { next: () => 'withdrawal-1' },
-      eventIdGenerator: { next: () => 'event-1' },
+      withdrawalIdGenerator: { next: () => WITHDRAWAL_ID },
+      eventIdGenerator: { next: () => EVENT_ID },
       clock: { now: () => new Date('2026-08-15T10:00:00.000Z') },
     });
 
     await useCase.execute({
       idempotencyKey: 'key-123',
-      userId: 'user-123',
+      userId: USER_ID,
       amount: Money.parse('100', Assets.USDT),
       destinationAddress: 'TXYZ123456789',
     });
@@ -67,7 +75,7 @@ describe('WithdrawalExecutionRequested contract', () => {
   };
 
   /** Mirrors the outbox row the event becomes once persisted and read back. */
-  const asOutboxRow = (event: IntegrationEvent): OutboxRow => ({
+  const asOutboxRow = (event: AnyIntegrationEvent): OutboxRow => ({
     id: event.id,
     event_type: event.type,
     aggregate_id: event.aggregateId,
@@ -95,8 +103,8 @@ describe('WithdrawalExecutionRequested contract', () => {
 
     expect(deadLettered).toEqual([]);
     expect(execute).toHaveBeenCalledWith({
-      eventId: 'event-1',
-      withdrawalId: 'withdrawal-1',
+      eventId: EVENT_ID,
+      withdrawalId: WITHDRAWAL_ID,
     });
   });
 
@@ -104,10 +112,10 @@ describe('WithdrawalExecutionRequested contract', () => {
     const event = await publishedEvent();
 
     expect(JSON.parse(toIntegrationMessage(asOutboxRow(event)).value)).toEqual({
-      eventId: 'event-1',
+      eventId: EVENT_ID,
       eventType: 'WithdrawalExecutionRequested',
-      withdrawalId: 'withdrawal-1',
-      userId: 'user-123',
+      withdrawalId: WITHDRAWAL_ID,
+      userId: USER_ID,
       asset: 'USDT',
       amount: '100',
       occurredAt: '2026-08-15T10:00:00.000Z',
@@ -117,6 +125,6 @@ describe('WithdrawalExecutionRequested contract', () => {
   it('partitions by withdrawal so one aggregate keeps its ordering', async () => {
     const event = await publishedEvent();
 
-    expect(toIntegrationMessage(asOutboxRow(event)).key).toBe('withdrawal-1');
+    expect(toIntegrationMessage(asOutboxRow(event)).key).toBe(WITHDRAWAL_ID);
   });
 });

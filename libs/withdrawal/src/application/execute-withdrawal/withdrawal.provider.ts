@@ -1,5 +1,7 @@
+import type { WithdrawalId } from '@bitex/platform';
+
 export type ExecutionRequest = Readonly<{
-  withdrawalId: string;
+  withdrawalId: WithdrawalId;
   asset: string;
   amount: string;
   destinationAddress: string;

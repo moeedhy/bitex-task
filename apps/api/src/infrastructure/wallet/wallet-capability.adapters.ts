@@ -1,3 +1,4 @@
+import type { ReservationId } from '@bitex/platform';
 import type {
   FinalizeReservation,
   ReleaseReservation,
@@ -34,11 +35,11 @@ export class WalletSettlementAdapter implements WalletSettlementPort {
     private readonly releaseReservation: ReleaseReservation,
   ) {}
 
-  finalize(reservationId: string): Promise<void> {
+  finalize(reservationId: ReservationId): Promise<void> {
     return this.finalizeReservation.execute(reservationId);
   }
 
-  release(reservationId: string): Promise<void> {
+  release(reservationId: ReservationId): Promise<void> {
     return this.releaseReservation.execute(reservationId);
   }
 }

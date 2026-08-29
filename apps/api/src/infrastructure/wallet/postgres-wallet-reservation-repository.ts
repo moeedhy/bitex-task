@@ -1,5 +1,14 @@
-import { Money, resolveAsset } from '@bitex/platform';
-import { ReservationNotFoundError, WalletReservation } from '@bitex/wallet';
+import {
+  Money,
+  ReservationId,
+  resolveAsset,
+  WithdrawalId,
+} from '@bitex/platform';
+import {
+  ReservationNotFoundError,
+  WalletId,
+  WalletReservation,
+} from '@bitex/wallet';
 import type {
   WalletReservationRepository,
   WalletReservationSnapshot,
@@ -40,7 +49,7 @@ export class PostgresWalletReservationRepository
     );
   }
 
-  async getForUpdate(reservationId: string): Promise<WalletReservation> {
+  async getForUpdate(reservationId: ReservationId): Promise<WalletReservation> {
     const result = await this.transaction.client().query<ReservationRow>(
       `SELECT id, wallet_id, withdrawal_id, asset, amount_atomic, status
        FROM wallet_reservations
@@ -54,9 +63,9 @@ export class PostgresWalletReservationRepository
     }
     const asset = resolveAsset(row.asset);
     return WalletReservation.reconstitute({
-      id: row.id,
-      walletId: row.wallet_id,
-      withdrawalId: row.withdrawal_id,
+      id: ReservationId.parse(row.id),
+      walletId: WalletId.parse(row.wallet_id),
+      withdrawalId: WithdrawalId.parse(row.withdrawal_id),
       amount: Money.fromAtomicUnits(BigInt(row.amount_atomic), asset),
       status: row.status,
     });

@@ -1,4 +1,10 @@
-import type { Clock, TransactionRunner } from '@bitex/platform';
+import type {
+  Clock,
+  EventId,
+  ReservationId,
+  TransactionRunner,
+  WithdrawalId,
+} from '@bitex/platform';
 import { WithdrawalExecutionUnresolvedError } from '../withdrawal.errors.js';
 import type { WithdrawalRepository } from '../ports/withdrawal.repository.js';
 import type {
@@ -8,13 +14,13 @@ import type {
 } from './withdrawal.provider.js';
 
 export interface ProcessedEventPort {
-  has(eventId: string): Promise<boolean>;
-  record(eventId: string): Promise<void>;
+  has(eventId: EventId): Promise<boolean>;
+  record(eventId: EventId): Promise<void>;
 }
 
 export interface WalletSettlementPort {
-  finalize(reservationId: string): Promise<void>;
-  release(reservationId: string): Promise<void>;
+  finalize(reservationId: ReservationId): Promise<void>;
+  release(reservationId: ReservationId): Promise<void>;
 }
 
 export interface ExecuteWithdrawalDependencies {
@@ -27,8 +33,8 @@ export interface ExecuteWithdrawalDependencies {
 }
 
 export interface ExecuteWithdrawalCommand {
-  eventId: string;
-  withdrawalId: string;
+  eventId: EventId;
+  withdrawalId: WithdrawalId;
 }
 
 export class ExecuteWithdrawal {

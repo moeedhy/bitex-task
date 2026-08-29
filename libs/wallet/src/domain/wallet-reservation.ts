@@ -1,4 +1,5 @@
-import type { Money } from '@bitex/platform';
+import type { Money, ReservationId, WithdrawalId } from '@bitex/platform';
+import type { WalletId } from './wallet-id.js';
 import {
   InvalidReservationAmountError,
   InvalidReservationTransitionError,
@@ -8,9 +9,9 @@ import {
 export type WalletReservationStatus = 'ACTIVE' | 'FINALIZED' | 'RELEASED';
 
 export interface WalletReservationSnapshot {
-  id: string;
-  walletId: string;
-  withdrawalId: string;
+  id: ReservationId;
+  walletId: WalletId;
+  withdrawalId: WithdrawalId;
   amount: Money;
   status: WalletReservationStatus;
 }
@@ -21,9 +22,6 @@ export class WalletReservation {
   static open(
     input: Omit<WalletReservationSnapshot, 'status'>,
   ): WalletReservation {
-    WalletReservation.assertIdentity(input.id, 'Reservation');
-    WalletReservation.assertIdentity(input.walletId, 'Wallet');
-    WalletReservation.assertIdentity(input.withdrawalId, 'Withdrawal');
     if (!input.amount.isPositive()) {
       throw new InvalidReservationAmountError();
     }
@@ -31,9 +29,6 @@ export class WalletReservation {
   }
 
   static reconstitute(snapshot: WalletReservationSnapshot): WalletReservation {
-    WalletReservation.assertIdentity(snapshot.id, 'Reservation');
-    WalletReservation.assertIdentity(snapshot.walletId, 'Wallet');
-    WalletReservation.assertIdentity(snapshot.withdrawalId, 'Withdrawal');
     if (!snapshot.amount.isPositive()) {
       throw new InvalidReservationAmountError();
     }
@@ -45,15 +40,15 @@ export class WalletReservation {
     return new WalletReservation({ ...snapshot });
   }
 
-  get id(): string {
+  get id(): ReservationId {
     return this.state.id;
   }
 
-  get walletId(): string {
+  get walletId(): WalletId {
     return this.state.walletId;
   }
 
-  get withdrawalId(): string {
+  get withdrawalId(): WithdrawalId {
     return this.state.withdrawalId;
   }
 
@@ -89,9 +84,4 @@ export class WalletReservation {
     }
   }
 
-  private static assertIdentity(value: string, label: string): void {
-    if (typeof value !== 'string' || value.trim().length === 0) {
-      throw new InvalidWalletStateError(`${label} identity is required.`);
-    }
-  }
 }

@@ -6,14 +6,23 @@ import { ReleaseReservation } from './release-reservation.js';
 import { ReserveFunds } from './reserve-funds.js';
 import type { WalletReservationRepository } from './wallet-reservation.repository.js';
 import type { WalletRepository } from './wallet.repository.js';
+import { ReservationId, UserId, WithdrawalId } from '@bitex/platform';
+import { WalletId } from '../domain/wallet-id.js';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+const WALLET_ID = WalletId.parse('33333333-3333-4333-8333-333333333333');
+const RESERVATION_ID = ReservationId.parse('44444444-4444-4444-8444-444444444444');
 
 describe('wallet application services', () => {
   const amount = (value: string) => Money.parse(value, Assets.USDT);
 
   const createHarness = () => {
     const wallet = WalletAccount.create({
-      id: 'wallet-1',
-      userId: 'user-123',
+      id: WALLET_ID,
+      userId: USER_ID,
       asset: Assets.USDT,
       balance: amount('100'),
     });
@@ -44,7 +53,7 @@ describe('wallet application services', () => {
       },
     };
     const reserveFunds = new ReserveFunds(wallets, reservations, {
-      next: () => 'reservation-1',
+      next: () => RESERVATION_ID,
     });
     return {
       wallet,
@@ -67,12 +76,12 @@ describe('wallet application services', () => {
     const harness = createHarness();
 
     const result = await harness.reserveFunds.execute({
-      withdrawalId: 'withdrawal-1',
-      userId: 'user-123',
+      withdrawalId: WITHDRAWAL_ID,
+      userId: USER_ID,
       amount: amount('80'),
     });
 
-    expect(result).toEqual({ reservationId: 'reservation-1' });
+    expect(result).toEqual({ reservationId: RESERVATION_ID });
     expect(harness.wallet.reservedBalance.toDecimalString()).toBe('80');
     expect(harness.reservation?.status).toBe('ACTIVE');
     expect(harness.walletSaves).toBe(1);
@@ -81,15 +90,15 @@ describe('wallet application services', () => {
   it('finalizes reservation lifecycle and captures reserved balance', async () => {
     const harness = createHarness();
     await harness.reserveFunds.execute({
-      withdrawalId: 'withdrawal-1',
-      userId: 'user-123',
+      withdrawalId: WITHDRAWAL_ID,
+      userId: USER_ID,
       amount: amount('80'),
     });
 
     await new FinalizeReservation(
       harness.wallets,
       harness.reservations,
-    ).execute('reservation-1');
+    ).execute(RESERVATION_ID);
 
     expect(harness.wallet.balance.toDecimalString()).toBe('20');
     expect(harness.reservation?.status).toBe('FINALIZED');
@@ -99,13 +108,13 @@ describe('wallet application services', () => {
   it('releases reservation lifecycle and reserved balance', async () => {
     const harness = createHarness();
     await harness.reserveFunds.execute({
-      withdrawalId: 'withdrawal-1',
-      userId: 'user-123',
+      withdrawalId: WITHDRAWAL_ID,
+      userId: USER_ID,
       amount: amount('80'),
     });
 
     await new ReleaseReservation(harness.wallets, harness.reservations).execute(
-      'reservation-1',
+      RESERVATION_ID,
     );
 
     expect(harness.wallet.availableBalance.toDecimalString()).toBe('100');

@@ -74,7 +74,11 @@ export class Money {
     return new Money(this.atomicUnits - other.atomicUnits, this.asset);
   }
 
-  compare(other: Money): Comparison {
+  /**
+   * Private because nothing outside needed a three-way result. The public
+   * surface is the two predicates the domain actually asks for.
+   */
+  private compare(other: Money): Comparison {
     this.assertCompatibleAsset(other);
 
     if (this.atomicUnits < other.atomicUnits) {
@@ -94,10 +98,6 @@ export class Money {
     );
   }
 
-  isZero(): boolean {
-    return this.atomicUnits === 0n;
-  }
-
   isPositive(): boolean {
     return this.atomicUnits > 0n;
   }
@@ -106,20 +106,8 @@ export class Money {
     return this.atomicUnits < 0n;
   }
 
-  isLessThan(other: Money): boolean {
-    return this.compare(other) < 0;
-  }
-
-  isLessThanOrEqual(other: Money): boolean {
-    return this.compare(other) <= 0;
-  }
-
   isGreaterThan(other: Money): boolean {
     return this.compare(other) > 0;
-  }
-
-  isGreaterThanOrEqual(other: Money): boolean {
-    return this.compare(other) >= 0;
   }
 
   toAtomicUnits(): bigint {

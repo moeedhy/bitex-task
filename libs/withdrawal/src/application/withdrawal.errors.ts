@@ -1,13 +1,15 @@
+import { CodedError } from '@bitex/platform';
+import type { ErrorCodeOf } from '@bitex/platform';
+
 /**
  * Workflow-level failures raised while coordinating aggregates, ports, and the
  * provider. They are not domain rules and carry no transport concerns.
  */
-export class WithdrawalNotFoundError extends Error {
+export class WithdrawalNotFoundError extends CodedError {
   readonly code = 'WITHDRAWAL_NOT_FOUND' as const;
 
   constructor(readonly withdrawalId: string) {
     super(`Withdrawal "${withdrawalId}" was not found.`);
-    this.name = 'WithdrawalNotFoundError';
   }
 }
 
@@ -20,14 +22,13 @@ export class WithdrawalNotFoundError extends Error {
  * detects the collision is an implementation choice, but the fact that a
  * collision rejects the request is application behaviour.
  */
-export class IdempotencyKeyConflictError extends Error {
+export class IdempotencyKeyConflictError extends CodedError {
   readonly code = 'IDEMPOTENCY_CONFLICT' as const;
 
   constructor(readonly idempotencyKey: string) {
     super(
       `Idempotency-Key "${idempotencyKey}" was already used with a different request payload.`,
     );
-    this.name = 'IdempotencyKeyConflictError';
   }
 }
 
@@ -37,8 +38,16 @@ export class IdempotencyKeyConflictError extends Error {
  * and the reservation stays ACTIVE; redelivery re-drives the idempotent
  * provider rather than releasing funds that may already be gone.
  */
-export class WithdrawalExecutionUnresolvedError extends Error {
+export class WithdrawalExecutionUnresolvedError extends CodedError {
   readonly code = 'WITHDRAWAL_EXECUTION_UNRESOLVED' as const;
+
+  /**
+   * The only retryable failure this workflow raises. Every other one is a
+   * rejected rule or a missing row, which the next attempt would reject
+   * identically; this one means "we do not know yet", and the provider call is
+   * idempotent, so asking again is exactly the right move.
+   */
+  override readonly retryable = true;
 
   constructor(
     readonly withdrawalId: string,
@@ -48,6 +57,11 @@ export class WithdrawalExecutionUnresolvedError extends Error {
       `Provider execution for withdrawal "${withdrawalId}" did not resolve; the withdrawal remains PROCESSING.`,
       options,
     );
-    this.name = 'WithdrawalExecutionUnresolvedError';
   }
 }
+
+export type WithdrawalApplicationErrorCode = ErrorCodeOf<
+  | typeof WithdrawalNotFoundError
+  | typeof IdempotencyKeyConflictError
+  | typeof WithdrawalExecutionUnresolvedError
+>;

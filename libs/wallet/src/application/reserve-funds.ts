@@ -1,4 +1,10 @@
-import type { IdGenerator, Money } from '@bitex/platform';
+import type {
+  IdGenerator,
+  Money,
+  ReservationId,
+  UserId,
+  WithdrawalId,
+} from '@bitex/platform';
 import { WalletReservation } from '../domain/wallet-reservation.js';
 import type { WalletReservationRepository } from './wallet-reservation.repository.js';
 import type { WalletRepository } from './wallet.repository.js';
@@ -7,7 +13,7 @@ export class ReserveFunds {
   constructor(
     private readonly wallets: WalletRepository,
     private readonly reservations: WalletReservationRepository,
-    private readonly reservationIds: IdGenerator,
+    private readonly reservationIds: IdGenerator<'ReservationId'>,
   ) {}
 
   /**
@@ -19,10 +25,10 @@ export class ReserveFunds {
    * wallet that is locked and the money that is reserved cannot disagree.
    */
   async execute(input: {
-    withdrawalId: string;
-    userId: string;
+    withdrawalId: WithdrawalId;
+    userId: UserId;
     amount: Money;
-  }): Promise<{ reservationId: string }> {
+  }): Promise<{ reservationId: ReservationId }> {
     const wallet = await this.wallets.getForUpdate(
       input.userId,
       input.amount.asset,

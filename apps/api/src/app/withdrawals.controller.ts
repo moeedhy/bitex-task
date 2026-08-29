@@ -10,7 +10,7 @@ import {
   Param,
   Post,
 } from '@nestjs/common';
-import { Money, resolveAsset } from '@bitex/platform';
+import { Money, resolveAsset, UserId, WithdrawalId } from '@bitex/platform';
 import { GetWithdrawal, RequestWithdrawal } from '@bitex/withdrawal';
 import { z } from 'zod';
 import { RedisRateLimiter } from '../infrastructure/redis/redis-rate-limiter.js';
@@ -57,8 +57,9 @@ export class WithdrawalsController {
       );
     }
     const body = RequestSchema.parse(rawBody);
+    const userId = UserId.parse(body.userId);
     const amount = Money.parse(body.amount, resolveAsset(body.asset));
-    if (!(await this.rateLimiter.allow(body.userId))) {
+    if (!(await this.rateLimiter.allow(userId))) {
       throw new HttpException(
         {
           errorCode: 'RATE_LIMIT_EXCEEDED',
@@ -69,22 +70,28 @@ export class WithdrawalsController {
     }
     const result = await this.requestWithdrawal.execute({
       idempotencyKey: idempotencyKey.trim(),
-      userId: body.userId,
+      userId,
       amount,
       destinationAddress: body.destinationAddress,
     });
     this.logger.log({
       correlationId,
       withdrawalId: result.withdrawalId,
-      userId: body.userId,
+      userId,
       operation: 'request-withdrawal',
       result: result.status,
     });
     return result;
   }
 
+  /**
+   * `WithdrawalId.parse` is what keeps a malformed path parameter a 400 rather
+   * than a 500. Once the ids are `uuid` columns, handing PostgreSQL
+   * `not-a-uuid` raises `22P02` from inside the query — an unmapped driver
+   * error — instead of returning zero rows and a clean 404.
+   */
   @Get(':withdrawalId')
   getById(@Param('withdrawalId') withdrawalId: string) {
-    return this.getWithdrawal.execute(withdrawalId);
+    return this.getWithdrawal.execute(WithdrawalId.parse(withdrawalId));
   }
 }

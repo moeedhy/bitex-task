@@ -8,10 +8,8 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { ZodError } from 'zod';
-import {
-  errorCode as codeOf,
-  errorMessage,
-} from '../infrastructure/shared/error-context.js';
+import { errorCode as codeOf, errorMessage } from '@bitex/platform';
+import type { ApiErrorCode } from './api-error-code.js';
 
 export interface ApiErrorBody {
   statusCode: number;
@@ -20,46 +18,64 @@ export interface ApiErrorBody {
 }
 
 /**
- * Domain and application failures that have a meaningful HTTP answer.
+ * The status every code the API can produce answers with.
  *
- * A `Map` rather than an object literal on purpose: an object literal is looked
- * up through its prototype, so an error carrying `code: 'constructor'` resolved
- * to `Object.prototype.constructor` — a truthy function — and `response.status(fn)`
- * then threw *inside the exception filter*, escaping to Express' default handler.
+ * A `Record` over `ApiErrorCode`, so this table is *exhaustive by compilation*:
+ * adding an error class to any library and forgetting it here fails
+ * `typecheck`. Nine codes previously fell through to an unmapped 500 —
+ * including `RESERVATION_NOT_FOUND` and both insufficient-balance failures —
+ * which is the failure mode this shape removes rather than documents.
+ *
+ * A `500` entry means "deliberately internal": the service's own state or
+ * wiring is wrong, not the caller's request. Those keep their code in the
+ * response so operators can find them, but not their message.
  */
-const statusByCode = new Map<string, HttpStatus>([
-  ['IDEMPOTENCY_CONFLICT', HttpStatus.CONFLICT],
-  ['INSUFFICIENT_AVAILABLE_BALANCE', HttpStatus.UNPROCESSABLE_ENTITY],
-  ['INSUFFICIENT_RESERVED_BALANCE', HttpStatus.UNPROCESSABLE_ENTITY],
-  ['WITHDRAWAL_NOT_FOUND', HttpStatus.NOT_FOUND],
-  ['WALLET_NOT_FOUND', HttpStatus.NOT_FOUND],
-  ['RESERVATION_NOT_FOUND', HttpStatus.NOT_FOUND],
-  ['INVALID_MONEY_AMOUNT', HttpStatus.BAD_REQUEST],
-  ['MONEY_PRECISION_EXCEEDED', HttpStatus.BAD_REQUEST],
-  ['UNSUPPORTED_ASSET', HttpStatus.BAD_REQUEST],
-  ['INVALID_ASSET', HttpStatus.BAD_REQUEST],
-  ['ASSET_MISMATCH', HttpStatus.BAD_REQUEST],
-  ['INVALID_WITHDRAWAL', HttpStatus.BAD_REQUEST],
-  ['INVALID_WITHDRAWAL_ADDRESS', HttpStatus.BAD_REQUEST],
-  ['INVALID_WALLET_AMOUNT', HttpStatus.BAD_REQUEST],
-  ['INVALID_RESERVATION_AMOUNT', HttpStatus.BAD_REQUEST],
-  ['WALLET_ASSET_MISMATCH', HttpStatus.UNPROCESSABLE_ENTITY],
-  ['INVALID_WITHDRAWAL_TRANSITION', HttpStatus.CONFLICT],
-  ['INVALID_RESERVATION_TRANSITION', HttpStatus.CONFLICT],
-]);
+const STATUS_BY_CODE: Record<ApiErrorCode, HttpStatus> = {
+  IDEMPOTENCY_CONFLICT: HttpStatus.CONFLICT,
+  IDEMPOTENCY_KEY_REQUIRED: HttpStatus.BAD_REQUEST,
+  RATE_LIMIT_EXCEEDED: HttpStatus.TOO_MANY_REQUESTS,
+  INVALID_REQUEST: HttpStatus.BAD_REQUEST,
+
+  INSUFFICIENT_AVAILABLE_BALANCE: HttpStatus.UNPROCESSABLE_ENTITY,
+  INSUFFICIENT_RESERVED_BALANCE: HttpStatus.UNPROCESSABLE_ENTITY,
+  WALLET_ASSET_MISMATCH: HttpStatus.UNPROCESSABLE_ENTITY,
+
+  WITHDRAWAL_NOT_FOUND: HttpStatus.NOT_FOUND,
+  WALLET_NOT_FOUND: HttpStatus.NOT_FOUND,
+  RESERVATION_NOT_FOUND: HttpStatus.NOT_FOUND,
+
+  INVALID_IDENTITY: HttpStatus.BAD_REQUEST,
+  INVALID_MONEY_AMOUNT: HttpStatus.BAD_REQUEST,
+  MONEY_PRECISION_EXCEEDED: HttpStatus.BAD_REQUEST,
+  UNSUPPORTED_ASSET: HttpStatus.BAD_REQUEST,
+  INVALID_ASSET: HttpStatus.BAD_REQUEST,
+  ASSET_MISMATCH: HttpStatus.BAD_REQUEST,
+  INVALID_WITHDRAWAL: HttpStatus.BAD_REQUEST,
+  INVALID_WITHDRAWAL_ADDRESS: HttpStatus.BAD_REQUEST,
+  INVALID_WALLET_AMOUNT: HttpStatus.BAD_REQUEST,
+  INVALID_RESERVATION_AMOUNT: HttpStatus.BAD_REQUEST,
+
+  INVALID_WITHDRAWAL_TRANSITION: HttpStatus.CONFLICT,
+  INVALID_RESERVATION_TRANSITION: HttpStatus.CONFLICT,
+
+  INVALID_WALLET_STATE: HttpStatus.INTERNAL_SERVER_ERROR,
+  WITHDRAWAL_EXECUTION_UNRESOLVED: HttpStatus.INTERNAL_SERVER_ERROR,
+  MISSING_TRANSACTION: HttpStatus.INTERNAL_SERVER_ERROR,
+  CORRUPT_IDEMPOTENCY_RECORD: HttpStatus.INTERNAL_SERVER_ERROR,
+  STALE_WRITE: HttpStatus.INTERNAL_SERVER_ERROR,
+};
 
 /**
- * Codes that are 500 *on purpose*, listed so that "deliberately internal" is
- * distinguishable from "nobody mapped it yet". Each one means the service's own
- * state or wiring is wrong, not the caller's request.
+ * Looked up through a `Map` rather than the record itself: an object literal is
+ * read through its prototype, so an error carrying `code: 'constructor'`
+ * resolved to `Object.prototype.constructor` — a truthy function — and
+ * `response.status(fn)` then threw *inside the exception filter*. `Object.entries`
+ * copies only own keys, so the table stays compile-checked and the lookup stays
+ * prototype-safe.
  */
-const deliberatelyInternal = new Set([
-  'INVALID_WALLET_STATE',
-  'WITHDRAWAL_EXECUTION_UNRESOLVED',
-  'MISSING_TRANSACTION',
-  'CORRUPT_IDEMPOTENCY_RECORD',
-  'STALE_WRITE',
-]);
+const statusByCode = new Map<string, HttpStatus>(
+  Object.entries(STATUS_BY_CODE),
+);
 
 const codeByStatus = new Map<number, string>([
   [HttpStatus.BAD_REQUEST, 'INVALID_REQUEST'],
@@ -142,13 +158,21 @@ export class ApiExceptionFilter implements ExceptionFilter {
     }
 
     const code = codeOf(exception);
-    const status = statusByCode.get(code) ?? HttpStatus.INTERNAL_SERVER_ERROR;
+    const status = statusByCode.get(code);
+    if (status === undefined) {
+      // Not one of ours: a driver timeout, a socket reset, a programming
+      // mistake. The message may carry a connection string or a row of data, so
+      // it is logged above and redacted here.
+      return {
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        errorCode: 'INTERNAL_ERROR',
+        message: 'Internal server error.',
+      };
+    }
     const internal = status === HttpStatus.INTERNAL_SERVER_ERROR;
     return {
       statusCode: status,
-      errorCode: internal && !deliberatelyInternal.has(code)
-        ? 'INTERNAL_ERROR'
-        : code,
+      errorCode: code,
       message: internal ? 'Internal server error.' : errorMessage(exception),
     };
   }

@@ -1,11 +1,17 @@
 import { OutboxPublisher, toIntegrationMessage } from './outbox-publisher.js';
 import type { OutboxRow } from './outbox-publisher.js';
+import { EventId, WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const EVENT_ID = EventId.parse('55555555-5555-4555-8555-555555555555');
 
 const row = (overrides: Partial<OutboxRow> = {}): OutboxRow => ({
-  id: 'event-1',
+  id: EVENT_ID,
   event_type: 'WithdrawalExecutionRequested',
-  aggregate_id: 'withdrawal-1',
-  payload: { withdrawalId: 'withdrawal-1', amount: '100' },
+  aggregate_id: WITHDRAWAL_ID,
+  payload: { withdrawalId: WITHDRAWAL_ID, amount: '100' },
   occurred_at: new Date('2026-08-15T10:00:00.000Z'),
   ...overrides,
 });
@@ -18,15 +24,15 @@ const producer = () => ({
 
 describe('toIntegrationMessage', () => {
   it('keys by aggregate so one withdrawal cannot be reordered across partitions', () => {
-    expect(toIntegrationMessage(row()).key).toBe('withdrawal-1');
+    expect(toIntegrationMessage(row()).key).toBe(WITHDRAWAL_ID);
   });
 
   it('flattens the payload into the documented wire envelope', () => {
     expect(JSON.parse(toIntegrationMessage(row()).value)).toEqual({
-      eventId: 'event-1',
+      eventId: EVENT_ID,
       eventType: 'WithdrawalExecutionRequested',
       occurredAt: '2026-08-15T10:00:00.000Z',
-      withdrawalId: 'withdrawal-1',
+      withdrawalId: WITHDRAWAL_ID,
       amount: '100',
     });
   });

@@ -1,58 +1,55 @@
-export class InvalidReservationAmountError extends Error {
+import { CodedError } from '@bitex/platform';
+import type { ErrorCodeOf } from '@bitex/platform';
+
+export class InvalidReservationAmountError extends CodedError {
   readonly code = 'INVALID_RESERVATION_AMOUNT' as const;
 
   constructor() {
     super('Reservation amount must be greater than zero.');
-    this.name = 'InvalidReservationAmountError';
   }
 }
 
-export class InvalidWalletAmountError extends Error {
+export class InvalidWalletAmountError extends CodedError {
   readonly code = 'INVALID_WALLET_AMOUNT' as const;
 
   constructor() {
     super('Wallet balance operations require a positive amount.');
-    this.name = 'InvalidWalletAmountError';
   }
 }
 
-export class WalletAssetMismatchError extends Error {
+export class WalletAssetMismatchError extends CodedError {
   readonly code = 'WALLET_ASSET_MISMATCH' as const;
 
   constructor() {
     super('The amount asset does not match the wallet asset.');
-    this.name = 'WalletAssetMismatchError';
   }
 }
 
-export class InvalidWalletStateError extends Error {
+export class InvalidWalletStateError extends CodedError {
   readonly code = 'INVALID_WALLET_STATE' as const;
 
   constructor(message: string) {
     super(message);
-    this.name = 'InvalidWalletStateError';
   }
 }
 
-export class InsufficientAvailableBalanceError extends Error {
+export class InsufficientAvailableBalanceError extends CodedError {
   readonly code = 'INSUFFICIENT_AVAILABLE_BALANCE' as const;
 
   constructor() {
     super('Wallet has insufficient available balance.');
-    this.name = 'InsufficientAvailableBalanceError';
   }
 }
 
-export class InsufficientReservedBalanceError extends Error {
+export class InsufficientReservedBalanceError extends CodedError {
   readonly code = 'INSUFFICIENT_RESERVED_BALANCE' as const;
 
   constructor() {
     super('Wallet has insufficient reserved balance.');
-    this.name = 'InsufficientReservedBalanceError';
   }
 }
 
-export class InvalidReservationTransitionError extends Error {
+export class InvalidReservationTransitionError extends CodedError {
   readonly code = 'INVALID_RESERVATION_TRANSITION' as const;
 
   constructor(
@@ -63,6 +60,15 @@ export class InvalidReservationTransitionError extends Error {
     super(
       `Cannot ${attemptedAction} reservation "${reservationId}" from ${currentStatus}.`,
     );
-    this.name = 'InvalidReservationTransitionError';
   }
 }
+
+export type WalletDomainErrorCode = ErrorCodeOf<
+  | typeof InvalidReservationAmountError
+  | typeof InvalidWalletAmountError
+  | typeof WalletAssetMismatchError
+  | typeof InvalidWalletStateError
+  | typeof InsufficientAvailableBalanceError
+  | typeof InsufficientReservedBalanceError
+  | typeof InvalidReservationTransitionError
+>;

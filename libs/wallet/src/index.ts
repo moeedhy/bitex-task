@@ -1,3 +1,4 @@
+export * from './domain/wallet-id.js';
 export * from './domain/wallet-reservation.js';
 export * from './domain/wallet-account.js';
 export * from './domain/wallet.errors.js';

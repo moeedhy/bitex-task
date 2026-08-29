@@ -1,4 +1,10 @@
-import type { Asset, Money } from '@bitex/platform';
+import type {
+  Asset,
+  Money,
+  ReservationId,
+  UserId,
+  WithdrawalId,
+} from '@bitex/platform';
 import { WithdrawalAddress } from './withdrawal-address.js';
 import {
   InvalidWithdrawalError,
@@ -14,11 +20,11 @@ export type WithdrawalStatus =
 export type WithdrawalFailureReason = 'PROVIDER_ERROR';
 
 export interface WithdrawalSnapshot {
-  id: string;
-  userId: string;
+  id: WithdrawalId;
+  userId: UserId;
   amount: Money;
   destinationAddress: WithdrawalAddress;
-  reservationId: string;
+  reservationId: ReservationId;
   status: WithdrawalStatus;
   transactionReference?: string;
   failureReason?: WithdrawalFailureReason;
@@ -27,11 +33,11 @@ export interface WithdrawalSnapshot {
 }
 
 interface RequestWithdrawalInput {
-  id: string;
-  userId: string;
+  id: WithdrawalId;
+  userId: UserId;
   amount: Money;
   destinationAddress: string;
-  reservationId: string;
+  reservationId: ReservationId;
   createdAt: Date;
 }
 
@@ -47,9 +53,6 @@ export class Withdrawal {
   }
 
   static request(input: RequestWithdrawalInput): Withdrawal {
-    Withdrawal.assertIdentity(input.id, 'Withdrawal');
-    Withdrawal.assertIdentity(input.userId, 'User');
-    Withdrawal.assertIdentity(input.reservationId, 'Reservation');
     if (!input.amount.isPositive()) {
       throw new InvalidWithdrawalError(
         'Withdrawal amount must be greater than zero.',
@@ -64,9 +67,6 @@ export class Withdrawal {
   }
 
   static reconstitute(snapshot: WithdrawalSnapshot): Withdrawal {
-    Withdrawal.assertIdentity(snapshot.id, 'Withdrawal');
-    Withdrawal.assertIdentity(snapshot.userId, 'User');
-    Withdrawal.assertIdentity(snapshot.reservationId, 'Reservation');
     if (!snapshot.amount.isPositive()) {
       throw new InvalidWithdrawalError(
         'Withdrawal amount must be greater than zero.',
@@ -76,11 +76,11 @@ export class Withdrawal {
     return new Withdrawal({ ...snapshot });
   }
 
-  get id(): string {
+  get id(): WithdrawalId {
     return this.state.id;
   }
 
-  get userId(): string {
+  get userId(): UserId {
     return this.state.userId;
   }
 
@@ -96,7 +96,7 @@ export class Withdrawal {
     return this.state.destinationAddress;
   }
 
-  get reservationId(): string {
+  get reservationId(): ReservationId {
     return this.state.reservationId;
   }
 
@@ -196,9 +196,4 @@ export class Withdrawal {
     }
   }
 
-  private static assertIdentity(value: string, label: string): void {
-    if (typeof value !== 'string' || value.trim().length === 0) {
-      throw new InvalidWithdrawalError(`${label} identity is required.`);
-    }
-  }
 }

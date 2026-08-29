@@ -1,4 +1,10 @@
-import { Money, resolveAsset } from '@bitex/platform';
+import {
+  Money,
+  ReservationId,
+  resolveAsset,
+  UserId,
+  WithdrawalId,
+} from '@bitex/platform';
 import {
   Withdrawal,
   WithdrawalAddress,
@@ -45,18 +51,7 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
     );
   }
 
-  async getById(id: string): Promise<Withdrawal | null> {
-    const result = await this.transaction
-      .client()
-      .query<WithdrawalRow>(
-        `SELECT ${columns} FROM withdrawals WHERE id = $1`,
-        [id],
-      );
-    const row = result.rows[0];
-    return row ? this.hydrate(row) : null;
-  }
-
-  async getForUpdate(id: string): Promise<Withdrawal> {
+  async getForUpdate(id: WithdrawalId): Promise<Withdrawal> {
     const result = await this.transaction
       .client()
       .query<WithdrawalRow>(
@@ -107,13 +102,13 @@ export class PostgresWithdrawalRepository implements WithdrawalRepository {
   private hydrate(row: WithdrawalRow): Withdrawal {
     const asset = resolveAsset(row.asset);
     return Withdrawal.reconstitute({
-      id: row.id,
-      userId: row.user_id,
+      id: WithdrawalId.parse(row.id),
+      userId: UserId.parse(row.user_id),
       amount: Money.fromAtomicUnits(BigInt(row.amount_atomic), asset),
       destinationAddress: WithdrawalAddress.reconstitute(
         row.destination_address,
       ),
-      reservationId: row.reservation_id,
+      reservationId: ReservationId.parse(row.reservation_id),
       status: row.status,
       transactionReference: row.transaction_reference ?? undefined,
       failureReason: row.failure_reason ?? undefined,

@@ -1,3 +1,4 @@
+import type { ReservationId } from '@bitex/platform';
 import type { WalletReservationRepository } from './wallet-reservation.repository.js';
 import type { WalletRepository } from './wallet.repository.js';
 
@@ -7,7 +8,7 @@ export class ReleaseReservation {
     private readonly reservations: WalletReservationRepository,
   ) {}
 
-  async execute(reservationId: string): Promise<void> {
+  async execute(reservationId: ReservationId): Promise<void> {
     const reservation = await this.reservations.getForUpdate(reservationId);
     const wallet = await this.wallets.getByIdForUpdate(reservation.walletId);
     reservation.release();

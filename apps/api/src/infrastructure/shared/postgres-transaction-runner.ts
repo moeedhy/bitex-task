@@ -1,13 +1,13 @@
+import { CodedError } from '@bitex/platform';
 import type { TransactionRunner } from '@bitex/platform';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool, PoolClient } from 'pg';
 
-export class MissingTransactionError extends Error {
+export class MissingTransactionError extends CodedError {
   readonly code = 'MISSING_TRANSACTION' as const;
 
   constructor() {
     super('A transaction-bound PostgreSQL client is required.');
-    this.name = 'MissingTransactionError';
   }
 }
 

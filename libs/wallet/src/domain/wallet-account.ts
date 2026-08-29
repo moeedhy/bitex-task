@@ -1,5 +1,6 @@
 import { Money } from '@bitex/platform';
-import type { Asset } from '@bitex/platform';
+import type { Asset, UserId } from '@bitex/platform';
+import type { WalletId } from './wallet-id.js';
 import {
   InsufficientAvailableBalanceError,
   InsufficientReservedBalanceError,
@@ -9,8 +10,8 @@ import {
 } from './wallet.errors.js';
 
 export interface WalletAccountSnapshot {
-  id: string;
-  userId: string;
+  id: WalletId;
+  userId: UserId;
   asset: Asset;
   balance: Money;
   reservedBalance: Money;
@@ -23,24 +24,20 @@ export class WalletAccount {
     input: Omit<WalletAccountSnapshot, 'reservedBalance'>,
   ): WalletAccount {
     const state = { ...input, reservedBalance: Money.zero(input.asset) };
-    WalletAccount.assertIdentity(state.id, 'Wallet');
-    WalletAccount.assertIdentity(state.userId, 'User');
     WalletAccount.assertBalances(state);
     return new WalletAccount(state);
   }
 
   static reconstitute(snapshot: WalletAccountSnapshot): WalletAccount {
-    WalletAccount.assertIdentity(snapshot.id, 'Wallet');
-    WalletAccount.assertIdentity(snapshot.userId, 'User');
     WalletAccount.assertBalances(snapshot);
     return new WalletAccount({ ...snapshot });
   }
 
-  get id(): string {
+  get id(): WalletId {
     return this.state.id;
   }
 
-  get userId(): string {
+  get userId(): UserId {
     return this.state.userId;
   }
 
@@ -137,9 +134,4 @@ export class WalletAccount {
     }
   }
 
-  private static assertIdentity(value: string, label: string): void {
-    if (typeof value !== 'string' || value.trim().length === 0) {
-      throw new InvalidWalletStateError(`${label} identity is required.`);
-    }
-  }
 }

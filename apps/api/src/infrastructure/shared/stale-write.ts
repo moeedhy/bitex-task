@@ -1,3 +1,4 @@
+import { CodedError } from '@bitex/platform';
 import type { QueryResult } from 'pg';
 
 /**
@@ -16,7 +17,7 @@ import type { QueryResult } from 'pg';
  * Failing loudly aborts the transaction and rolls the whole thing back, which is
  * the only safe response to a write that did not land.
  */
-export class StaleWriteError extends Error {
+export class StaleWriteError extends CodedError {
   readonly code = 'STALE_WRITE' as const;
 
   constructor(
@@ -27,7 +28,6 @@ export class StaleWriteError extends Error {
     super(
       `Expected to update exactly one "${relation}" row for "${identity}", but ${affected} were affected.`,
     );
-    this.name = 'StaleWriteError';
   }
 }
 

@@ -1,3 +1,4 @@
+import type { WithdrawalId } from '@bitex/platform';
 import type { Withdrawal } from '../../domain/withdrawal.js';
 
 /**
@@ -10,6 +11,6 @@ import type { Withdrawal } from '../../domain/withdrawal.js';
  */
 export interface WithdrawalRepository {
   add(withdrawal: Withdrawal): Promise<void>;
-  getForUpdate(id: string): Promise<Withdrawal>;
+  getForUpdate(id: WithdrawalId): Promise<Withdrawal>;
   save(withdrawal: Withdrawal): Promise<void>;
 }

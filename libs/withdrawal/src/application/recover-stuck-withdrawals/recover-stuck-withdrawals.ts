@@ -3,6 +3,8 @@ import type {
   IdGenerator,
   Outbox,
   TransactionRunner,
+  UserId,
+  WithdrawalId,
 } from '@bitex/platform';
 
 /**
@@ -11,8 +13,8 @@ import type {
  * mutate the Withdrawal.
  */
 export interface StuckWithdrawal {
-  withdrawalId: string;
-  userId: string;
+  withdrawalId: WithdrawalId;
+  userId: UserId;
   asset: string;
   amount: string;
 }
@@ -28,7 +30,7 @@ export interface RecoverStuckWithdrawalsDependencies {
   transactionRunner: TransactionRunner;
   stuckWithdrawals: StuckWithdrawalQueryPort;
   outbox: Outbox;
-  eventIdGenerator: IdGenerator;
+  eventIdGenerator: IdGenerator<'EventId'>;
   clock: Clock;
   /** How long a Withdrawal may stay PROCESSING before it is re-driven. */
   processingTimeoutMs: number;
@@ -57,7 +59,7 @@ export class RecoverStuckWithdrawals {
     private readonly dependencies: RecoverStuckWithdrawalsDependencies,
   ) {}
 
-  execute(): Promise<{ rescheduled: string[] }> {
+  execute(): Promise<{ rescheduled: WithdrawalId[] }> {
     return this.dependencies.transactionRunner.run(async () => {
       const now = this.dependencies.clock.now();
       const stuck = await this.dependencies.stuckWithdrawals.findProcessingSince(

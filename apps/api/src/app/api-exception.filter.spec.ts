@@ -61,6 +61,12 @@ describe('ApiExceptionFilter', () => {
     expect(thrown(new Coded(code)).status).toBe(expected);
   });
 
+  /**
+   * The table these rely on is a `Record<ApiErrorCode, HttpStatus>`, so the
+   * real guarantee -- that no library error can reach a client as an unmapped
+   * 500 -- is enforced by `typecheck`, not by this list. These cases pin the
+   * behaviour that the compiler cannot: which status each choice produces.
+   */
   it('keeps genuine integrity alarms internal but names them', () => {
     expect(thrown(new Coded('STALE_WRITE'))).toEqual({
       status: HttpStatus.INTERNAL_SERVER_ERROR,

@@ -1,3 +1,4 @@
+import { errorCode, EventId, isRetryable, WithdrawalId } from '@bitex/platform';
 import type { ExecuteWithdrawal } from '@bitex/withdrawal';
 import { Logger } from '@nestjs/common';
 import type { Consumer } from 'kafkajs';
@@ -13,21 +14,14 @@ const EventSchema = z.strictObject({
   occurredAt: z.string().datetime(),
 });
 
-/**
- * Failures that cannot become successes by trying again: the referenced state
- * is missing or the transition is not legal. Retrying these forever would park
- * the partition without ever making progress.
+/*
+ * Whether a failure is worth retrying is answered by `isRetryable`, which asks
+ * the error. This file used to hold a hand-maintained set of eight code
+ * *strings* harvested from two libraries it does not import: renaming a code
+ * there silently made it retryable here, and every code nobody remembered to
+ * add — an insufficient balance, an invalid amount — burned the full retry
+ * budget re-deciding a verdict that could never change.
  */
-const NON_RETRYABLE_CODES = new Set([
-  'WITHDRAWAL_NOT_FOUND',
-  'INVALID_WITHDRAWAL',
-  'INVALID_WITHDRAWAL_ADDRESS',
-  'INVALID_WITHDRAWAL_TRANSITION',
-  'RESERVATION_NOT_FOUND',
-  'INVALID_RESERVATION_TRANSITION',
-  'WALLET_NOT_FOUND',
-  'WALLET_ASSET_MISMATCH',
-]);
 
 export type DeadLetterReason =
   | 'UNPARSEABLE_MESSAGE'
@@ -104,12 +98,23 @@ export class WithdrawalExecutionConsumer {
     }
     const event = parsed.data;
 
+    // Identities are parsed before the retry loop, not inside it: a message
+    // carrying a malformed id is unparseable, and calling it a failed attempt
+    // would spend the whole backoff budget re-deciding that.
+    let command;
+    try {
+      command = {
+        eventId: EventId.parse(event.eventId),
+        withdrawalId: WithdrawalId.parse(event.withdrawalId),
+      };
+    } catch (error) {
+      await this.deadLetter(key, value, 'UNPARSEABLE_MESSAGE', error);
+      return;
+    }
+
     for (let attempt = 1; attempt <= this.options.maxAttempts; attempt += 1) {
       try {
-        await this.executeWithdrawal.execute({
-          eventId: event.eventId,
-          withdrawalId: event.withdrawalId,
-        });
+        await this.executeWithdrawal.execute(command);
         this.logger.log({
           eventId: event.eventId,
           withdrawalId: event.withdrawalId,
@@ -165,16 +170,4 @@ export class WithdrawalExecutionConsumer {
     });
     await this.deadLetters.send({ key, value, reason, error: code });
   }
-}
-
-function errorCode(error: unknown): string {
-  const candidate = error as { code?: unknown; name?: unknown };
-  if (typeof candidate?.code === 'string') {
-    return candidate.code;
-  }
-  return typeof candidate?.name === 'string' ? candidate.name : 'UNKNOWN_ERROR';
-}
-
-function isRetryable(error: unknown): boolean {
-  return !NON_RETRYABLE_CODES.has(errorCode(error));
 }

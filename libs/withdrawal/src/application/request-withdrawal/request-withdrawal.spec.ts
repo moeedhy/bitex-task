@@ -6,6 +6,15 @@ import type {
   RequestWithdrawalDependencies,
   RequestWithdrawalResult,
 } from './request-withdrawal.js';
+import { EventId, ReservationId, UserId, WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const ORIGINAL_WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-1111111110aa');
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+const RESERVATION_ID = ReservationId.parse('44444444-4444-4444-8444-444444444444');
+const EVENT_ID = EventId.parse('55555555-5555-4555-8555-555555555555');
 
 /**
  * Stands in for any wallet-side domain rejection. The withdrawal slice must not
@@ -18,7 +27,7 @@ class WalletRejection extends Error {
 describe('RequestWithdrawal', () => {
   const command = {
     idempotencyKey: 'key-123',
-    userId: 'user-123',
+    userId: USER_ID,
     amount: Money.parse('100', Assets.USDT),
     destinationAddress: 'TXYZ123456789',
   };
@@ -55,7 +64,7 @@ describe('RequestWithdrawal', () => {
           if (reserveFailure) {
             throw reserveFailure;
           }
-          return { reservationId: 'reservation-1' };
+          return { reservationId: RESERVATION_ID };
         },
       },
       withdrawals: {
@@ -74,8 +83,8 @@ describe('RequestWithdrawal', () => {
           events.push(event);
         },
       },
-      withdrawalIdGenerator: { next: () => 'withdrawal-1' },
-      eventIdGenerator: { next: () => 'event-1' },
+      withdrawalIdGenerator: { next: () => WITHDRAWAL_ID },
+      eventIdGenerator: { next: () => EVENT_ID },
       clock: { now: () => new Date('2026-08-15T10:00:00.000Z') },
     };
 
@@ -106,7 +115,7 @@ describe('RequestWithdrawal', () => {
     const result = await harness.useCase.execute(command);
 
     expect(result).toEqual({
-      withdrawalId: 'withdrawal-1',
+      withdrawalId: WITHDRAWAL_ID,
       status: 'PENDING',
       asset: 'USDT',
       amount: '100',
@@ -116,9 +125,9 @@ describe('RequestWithdrawal', () => {
     expect(harness.withdrawals).toHaveLength(1);
     expect(harness.events).toEqual([
       expect.objectContaining({
-        id: 'event-1',
+        id: EVENT_ID,
         type: 'WithdrawalExecutionRequested',
-        aggregateId: 'withdrawal-1',
+        aggregateId: WITHDRAWAL_ID,
       }),
     ]);
     expect(harness.completions).toEqual([result]);
@@ -142,7 +151,7 @@ describe('RequestWithdrawal', () => {
   it('returns the stored response without repeating financial effects', async () => {
     const harness = createHarness();
     const original: RequestWithdrawalResult = {
-      withdrawalId: 'withdrawal-original',
+      withdrawalId: ORIGINAL_WITHDRAWAL_ID,
       status: 'PENDING',
       asset: 'USDT',
       amount: '100',

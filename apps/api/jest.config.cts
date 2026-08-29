@@ -15,6 +15,12 @@ module.exports = {
   transform: {
     '^.+\\.[tj]s$': ['@swc/jest', swcJestConfig],
   },
+  // `uuid` v14 ships ESM only, and Jest runs these suites as CommonJS. Node's
+  // resolver picks its `dist-node` ESM build, which Jest cannot parse unless the
+  // package is handed to the transform like our own sources are. The pnpm store
+  // layout puts it at `node_modules/.pnpm/uuid@<version>/node_modules/uuid`, so
+  // both segments have to survive the negative lookahead.
+  transformIgnorePatterns: ['node_modules/(?!(\\.pnpm/)?uuid)'],
   moduleFileExtensions: ['ts', 'js', 'html'],
   coverageDirectory: 'test-output/jest/coverage',
 };

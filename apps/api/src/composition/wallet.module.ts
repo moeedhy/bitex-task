@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { uuidV7Generator } from '@bitex/platform';
 import {
   FinalizeReservation,
   ReleaseReservation,
@@ -39,7 +39,12 @@ import { PersistenceModule } from './persistence.module.js';
       useFactory: (
         wallets: PostgresWalletRepository,
         reservations: PostgresWalletReservationRepository,
-      ) => new ReserveFunds(wallets, reservations, { next: randomUUID }),
+      ) =>
+        new ReserveFunds(
+          wallets,
+          reservations,
+          uuidV7Generator<'ReservationId'>(),
+        ),
     },
     {
       provide: FinalizeReservation,

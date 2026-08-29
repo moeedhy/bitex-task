@@ -1,4 +1,4 @@
-import type { IntegrationEvent, Outbox } from '@bitex/platform';
+import type { AnyIntegrationEvent, Outbox } from '@bitex/platform';
 import type { PostgresTransactionRunner } from './postgres-transaction-runner.js';
 
 export class PostgresOutbox implements Outbox {
@@ -6,7 +6,7 @@ export class PostgresOutbox implements Outbox {
     private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
   ) {}
 
-  async append(event: IntegrationEvent): Promise<void> {
+  async append(event: AnyIntegrationEvent): Promise<void> {
     await this.transaction.client().query(
       `INSERT INTO outbox_events
         (id, event_type, aggregate_id, payload, occurred_at)

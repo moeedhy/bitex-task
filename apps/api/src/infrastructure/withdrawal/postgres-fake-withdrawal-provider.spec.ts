@@ -1,4 +1,9 @@
 import { PostgresFakeWithdrawalProvider } from './postgres-fake-withdrawal-provider.js';
+import { WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
 
 describe('PostgresFakeWithdrawalProvider', () => {
   it('returns the same provider result for repeated withdrawal execution', async () => {
@@ -19,7 +24,7 @@ describe('PostgresFakeWithdrawalProvider', () => {
       () => 'tx-fixed',
     );
     const request = {
-      withdrawalId: 'withdrawal-1',
+      withdrawalId: WITHDRAWAL_ID,
       amount: '100',
       asset: 'USDT',
       destinationAddress: 'TXYZ123456789',

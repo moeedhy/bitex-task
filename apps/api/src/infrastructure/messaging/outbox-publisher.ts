@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { Producer } from 'kafkajs';
 import type { Pool, PoolClient } from 'pg';
-import { errorCode, errorMessage } from '../shared/error-context.js';
+import { errorCode, errorMessage } from '@bitex/platform';
 
 export interface OutboxRow {
   id: string;

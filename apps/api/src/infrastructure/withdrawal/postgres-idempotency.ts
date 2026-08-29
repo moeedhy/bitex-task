@@ -1,3 +1,4 @@
+import { CodedError } from '@bitex/platform';
 import type {
   IdempotencyClaim,
   RequestWithdrawalResult,
@@ -20,14 +21,13 @@ interface IdempotencyRow {
  * visible inside the transaction that wrote it. This is a data-integrity
  * alarm, not a business outcome, so it is not mapped to a 4xx response.
  */
-export class CorruptIdempotencyRecordError extends Error {
+export class CorruptIdempotencyRecordError extends CodedError {
   readonly code = 'CORRUPT_IDEMPOTENCY_RECORD' as const;
 
   constructor(readonly idempotencyKey: string) {
     super(
       `Idempotency record for key "${idempotencyKey}" is present but not completed.`,
     );
-    this.name = 'CorruptIdempotencyRecordError';
   }
 }
 

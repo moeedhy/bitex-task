@@ -1,6 +1,7 @@
-import { Money, resolveAsset } from '@bitex/platform';
+import { Money, resolveAsset, UserId } from '@bitex/platform';
 import type { Asset } from '@bitex/platform';
 import { WalletAccount, WalletNotFoundError } from '@bitex/wallet';
+import { WalletId } from '@bitex/wallet';
 import type { WalletRepository } from '@bitex/wallet';
 import type { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
 import { requireSingleRow } from '../shared/stale-write.js';
@@ -20,7 +21,7 @@ export class PostgresWalletRepository implements WalletRepository {
     private readonly transaction: Pick<PostgresTransactionRunner, 'client'>,
   ) {}
 
-  async getForUpdate(userId: string, asset: Asset): Promise<WalletAccount> {
+  async getForUpdate(userId: UserId, asset: Asset): Promise<WalletAccount> {
     const result = await this.transaction.client().query<WalletRow>(
       `SELECT ${columns}
        FROM wallets
@@ -31,7 +32,7 @@ export class PostgresWalletRepository implements WalletRepository {
     return this.requireWallet(result.rows[0], `${userId}/${asset.code}`);
   }
 
-  async getByIdForUpdate(walletId: string): Promise<WalletAccount> {
+  async getByIdForUpdate(walletId: WalletId): Promise<WalletAccount> {
     const result = await this.transaction.client().query<WalletRow>(
       `SELECT ${columns}
        FROM wallets
@@ -63,8 +64,11 @@ export class PostgresWalletRepository implements WalletRepository {
     }
     const asset = resolveAsset(row.asset);
     return WalletAccount.reconstitute({
-      id: row.id,
-      userId: row.user_id,
+      // Parsed, not cast. The column is still TEXT until the identity
+      // migration lands, so the database is not yet the guarantee the branded
+      // type claims -- this is where that gap is closed.
+      id: WalletId.parse(row.id),
+      userId: UserId.parse(row.user_id),
       asset,
       balance: Money.fromAtomicUnits(BigInt(row.balance_atomic), asset),
       reservedBalance: Money.fromAtomicUnits(

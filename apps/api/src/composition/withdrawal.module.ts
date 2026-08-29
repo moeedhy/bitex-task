@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { uuidV7Generator } from '@bitex/platform';
 import {
   FinalizeReservation,
   ReleaseReservation,
@@ -29,7 +29,13 @@ import { PersistenceModule } from './persistence.module.js';
 import { WalletModule } from './wallet.module.js';
 
 const clock = { now: () => new Date() };
-const ids = { next: randomUUID };
+
+// Two generators, not one object under two names: `IdGenerator` is typed by
+// the identity it mints, so handing the withdrawal generator to the event slot
+// is now a compile error rather than an invisible coincidence.
+const withdrawalIds = uuidV7Generator<'WithdrawalId'>();
+const eventIds = uuidV7Generator<'EventId'>();
+
 
 /**
  * The Withdrawal bounded context. It depends on Wallet only through the two
@@ -122,8 +128,8 @@ const ids = { next: randomUUID };
           walletReservation,
           withdrawals,
           outbox,
-          withdrawalIdGenerator: ids,
-          eventIdGenerator: ids,
+          withdrawalIdGenerator: withdrawalIds,
+          eventIdGenerator: eventIds,
           clock,
         }),
     },
@@ -168,7 +174,7 @@ const ids = { next: randomUUID };
           transactionRunner,
           stuckWithdrawals,
           outbox,
-          eventIdGenerator: ids,
+          eventIdGenerator: eventIds,
           clock,
           processingTimeoutMs: envNumber(
             process.env.WITHDRAWAL_PROCESSING_TIMEOUT_MS,

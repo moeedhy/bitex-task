@@ -1,20 +1,30 @@
-import type { IntegrationEvent } from '@bitex/platform';
+import type { AnyIntegrationEvent } from '@bitex/platform';
 import { RecoverStuckWithdrawals } from './recover-stuck-withdrawals.js';
 import type {
   RecoverStuckWithdrawalsDependencies,
   StuckWithdrawal,
 } from './recover-stuck-withdrawals.js';
+import { EventId, UserId, WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const OTHER_WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111112');
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+// The harness mints sequential event ids so the assertions can name them.
+const recoveryEventId = (nth: number) =>
+  EventId.parse(`55555555-5555-4555-8555-${String(nth).padStart(12, '0')}`);
 
 describe('RecoverStuckWithdrawals', () => {
   const stuckWithdrawal: StuckWithdrawal = {
-    withdrawalId: 'withdrawal-1',
-    userId: 'user-123',
+    withdrawalId: WITHDRAWAL_ID,
+    userId: USER_ID,
     asset: 'USDT',
     amount: '100',
   };
 
   const createHarness = (stuck: StuckWithdrawal[]) => {
-    const events: IntegrationEvent[] = [];
+    const events: AnyIntegrationEvent[] = [];
     const thresholds: Date[] = [];
     let transactionCalls = 0;
     let eventIds = 0;
@@ -38,7 +48,7 @@ describe('RecoverStuckWithdrawals', () => {
         },
       },
       eventIdGenerator: {
-        next: () => `recovery-event-${++eventIds}`,
+        next: () => recoveryEventId(++eventIds),
       },
       clock: { now: () => new Date('2026-08-15T10:30:00.000Z') },
       processingTimeoutMs: 15 * 60 * 1000,
@@ -60,16 +70,16 @@ describe('RecoverStuckWithdrawals', () => {
 
     const result = await harness.useCase.execute();
 
-    expect(result.rescheduled).toEqual(['withdrawal-1']);
+    expect(result.rescheduled).toEqual([WITHDRAWAL_ID]);
     expect(harness.events).toEqual([
       {
-        id: 'recovery-event-1',
+        id: recoveryEventId(1),
         type: 'WithdrawalExecutionRequested',
-        aggregateId: 'withdrawal-1',
+        aggregateId: WITHDRAWAL_ID,
         occurredAt: new Date('2026-08-15T10:30:00.000Z'),
         payload: {
-          withdrawalId: 'withdrawal-1',
-          userId: 'user-123',
+          withdrawalId: WITHDRAWAL_ID,
+          userId: USER_ID,
           asset: 'USDT',
           amount: '100',
         },
@@ -91,14 +101,14 @@ describe('RecoverStuckWithdrawals', () => {
   it('issues a fresh event id so consumer deduplication cannot suppress recovery', async () => {
     const harness = createHarness([
       stuckWithdrawal,
-      { ...stuckWithdrawal, withdrawalId: 'withdrawal-2' },
+      { ...stuckWithdrawal, withdrawalId: OTHER_WITHDRAWAL_ID },
     ]);
 
     await harness.useCase.execute();
 
     expect(harness.events.map((event) => event.id)).toEqual([
-      'recovery-event-1',
-      'recovery-event-2',
+      recoveryEventId(1),
+      recoveryEventId(2),
     ]);
   });
 

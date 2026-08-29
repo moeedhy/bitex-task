@@ -123,3 +123,92 @@ The hierarchy is now stated: **wallet → reservation → withdrawal**. Any oper
 `findProcessingSince` is an `UPDATE … FOR UPDATE SKIP LOCKED … RETURNING`, matching the lease the outbox publisher already uses.
 
 As a plain `SELECT` it had no exclusion between replicas and never moved `updated_at`, and nothing else moves it for a withdrawal wedged in `PROCESSING`. A stranded withdrawal was therefore re-published by every replica on every cycle, without bound. Re-stamping `updated_at` re-arms the timeout, so a retry costs one event per timeout window. Bounding retries absolutely still needs an attempt counter, which needs a column.
+
+## 27. Identities are branded UUIDs, parsed at the edges
+
+Every identifier is `Uuid<'Name'>` — a `string` at runtime, a distinct type at
+compile time. `WithdrawalId` and `ReservationId` are no longer interchangeable,
+so `settle(reservationId, withdrawalId)` cannot be called with its arguments
+swapped, and `GetWithdrawal.execute(id)` cannot be handed a user id.
+
+The brand is unforgeable outside `parse()`, which is what lets the aggregates
+stop checking. Each of `WalletAccount`, `WalletReservation` and `Withdrawal`
+carried a private `assertIdentity` static — the same non-blank check, throwing
+two different error types, accepting `'wallet-!!!'` as a valid wallet id. All
+three are gone. The check happens once, where a raw string crosses into the
+system: an HTTP path parameter, a Kafka payload, a database row.
+
+Validation matches the RFC 4122 *layout*, not version 7. New ids are minted as
+UUIDv7 for the index locality that time-ordered keys buy, but rows written
+before that change hold v4 values and are still valid identities.
+
+`UserId` is branded too, which deviates from the exercise brief: its examples
+use `"userId": "user-123"`. This service treats `userId` as an opaque foreign
+identity, so nothing forced the choice — typing it uniformly buys one identity
+discipline across every table, port and adapter instead of one exception to it.
+The seed data and the README examples use UUIDs accordingly. Reverting is a
+one-file change: drop the UUID constraint from `UserId` in
+`libs/platform/src/identity` and leave `wallets.user_id` as `TEXT`.
+
+## 28. Retryability belongs to the error, not to a list of strings
+
+`CodedError` carries `code` and `retryable`. The Kafka consumer asks
+`isRetryable(error)` instead of matching against a hand-maintained set of eight
+code *strings* harvested from two libraries it does not import.
+
+That set was wrong in both directions. Renaming a code in a library silently
+made it retryable here. And every code nobody remembered to add — an
+insufficient balance, an invalid amount, a precision violation — burned the full
+retry budget and the backoff delay re-deriving a verdict that could never
+change.
+
+The default is deliberate: a `CodedError` is final unless it says otherwise,
+because domain and application failures are deterministic. Anything that is
+*not* one of ours is retryable, because a driver timeout or a socket reset
+carries no verdict and is exactly what redelivery exists for. Today one
+application failure opts in — `WITHDRAWAL_EXECUTION_UNRESOLVED`, which means
+"we do not know yet" against an idempotent provider.
+
+## 29. The HTTP status table is exhaustive by compilation
+
+`Record<ApiErrorCode, HttpStatus>` in `api-exception.filter.ts`, where
+`ApiErrorCode` is composed at the app layer from each library's own union of its
+error classes' codes. Adding an error class without deciding its HTTP status
+fails `typecheck`.
+
+Before this, nine codes fell through to an unmapped 500 — including
+`RESERVATION_NOT_FOUND` and both insufficient-balance failures, which are
+ordinary client-visible outcomes. A `500` entry in the table now means
+*deliberately* internal; those responses keep their code so operators can find
+them, but not their message.
+
+The unions are written against the error classes rather than as a second list of
+literals, so they cannot drift from the errors they describe.
+
+## 30. `uuid` is declared by the library that imports it, and nowhere else
+
+Worth recording because the reasoning here was initially wrong.
+
+Webpack externalises workspace-root dependencies, so `import { v7 } from 'uuid'`
+inside `libs/platform` becomes a literal `require("uuid")` in
+`apps/api/dist/main.js` — verified in the bundle. That looked like it required a
+duplicate entry in `apps/api/package.json`, since the app is what runs.
+
+It does not. `pnpm --filter @bitex/api deploy --prod --legacy` — the command the
+Dockerfile runs — resolves the workspace graph, so `@bitex/platform`'s
+dependencies are installed and linked at the deploy root. Confirmed by deploying
+without the duplicate entry and resolving `uuid` from the result. The duplicate
+would have been an unused direct dependency: exactly the kind of entry
+`@nx/dependency-checks` exists to remove.
+
+The rule that does hold: a package imported only by workspace-root tooling and
+never declared by any workspace package will not reach the container.
+
+## 31. Jest transforms `uuid`
+
+`uuid@14` ships ESM only, and these suites run as CommonJS. Every project's
+`jest.config.cts` therefore carries
+`transformIgnorePatterns: ['node_modules/(?!(\\.pnpm/)?uuid)']`, which hands the
+package to `@swc/jest` the same way our own sources are handled. The `.pnpm`
+segment is required because pnpm's store puts the package at
+`node_modules/.pnpm/uuid@<version>/node_modules/uuid`.

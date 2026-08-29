@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { Assets, Money } from '@bitex/platform';
 import {
@@ -25,6 +24,15 @@ import { PostgresOutbox } from '../shared/postgres-outbox.js';
 import { PostgresProcessedEvents } from './postgres-processed-events.js';
 import { PostgresStuckWithdrawalQuery } from './postgres-stuck-withdrawal-query.js';
 import { PostgresFakeWithdrawalProvider } from './postgres-fake-withdrawal-provider.js';
+import { EventId, UserId, uuidV7Generator } from '@bitex/platform';
+import { WalletId } from '@bitex/wallet';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+const SUCCESS_EVENT_ID = EventId.parse('55555555-5555-4555-8555-555555555501');
+const FAILURE_EVENT_ID = EventId.parse('55555555-5555-4555-8555-555555555502');
+const WALLET_ID = WalletId.parse('33333333-3333-4333-8333-333333333333');
 
 const describePostgres = process.env.TEST_DATABASE_URL
   ? describe
@@ -58,7 +66,8 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     );
     await pool.query(
       `INSERT INTO wallets(id, user_id, asset, balance_atomic, reserved_atomic)
-       VALUES ('wallet-1', 'user-123', 'USDT', 100000000, 0)`,
+       VALUES ($1, $2, 'USDT', 100000000, 0)`,
+      [WALLET_ID, USER_ID],
     );
     transaction = new PostgresTransactionRunner(pool);
     walletRepository = new PostgresWalletRepository(transaction);
@@ -72,13 +81,13 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
       walletReservation: {
         reserve: (input) =>
           new ReserveFunds(walletRepository, walletReservationRepository, {
-            next: randomUUID,
+            next: uuidV7Generator<'ReservationId'>().next,
           }).execute(input),
       },
       withdrawals: withdrawalRepository,
       outbox: new PostgresOutbox(transaction),
-      withdrawalIdGenerator: { next: randomUUID },
-      eventIdGenerator: { next: randomUUID },
+      withdrawalIdGenerator: uuidV7Generator<'WithdrawalId'>(),
+      eventIdGenerator: uuidV7Generator<'EventId'>(),
       clock: { now: () => new Date('2026-08-15T10:00:00.000Z') },
     });
   });
@@ -89,7 +98,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     const execute = (key: string) =>
       useCase.execute({
         idempotencyKey: key,
-        userId: 'user-123',
+        userId: USER_ID,
         amount: Money.parse('80', Assets.USDT),
         destinationAddress: 'TXYZ123456789',
       });
@@ -113,7 +122,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     );
     const wallet = await pool.query(
       'SELECT reserved_atomic FROM wallets WHERE id = $1',
-      ['wallet-1'],
+      [WALLET_ID],
     );
     expect(wallet.rows[0].reserved_atomic).toBe('80000000');
     await expect(
@@ -127,7 +136,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
   it('coalesces concurrent identical idempotent requests into one logical result', async () => {
     const command = {
       idempotencyKey: 'same-key',
-      userId: 'user-123',
+      userId: USER_ID,
       amount: Money.parse('10', Assets.USDT),
       destinationAddress: 'TXYZ123456789',
     };
@@ -154,11 +163,11 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     const execute = executionUseCase(false);
 
     await execute.execute({
-      eventId: 'success-event',
+      eventId: SUCCESS_EVENT_ID,
       withdrawalId: requested.withdrawalId,
     });
     await execute.execute({
-      eventId: 'success-event',
+      eventId: SUCCESS_EVENT_ID,
       withdrawalId: requested.withdrawalId,
     });
 
@@ -177,7 +186,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     const requested = await request('failure-key', '25');
 
     await executionUseCase(true).execute({
-      eventId: 'failure-event',
+      eventId: FAILURE_EVENT_ID,
       withdrawalId: requested.withdrawalId,
     });
 
@@ -204,7 +213,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     ).resolves.toMatchObject({ rowCount: 1 });
     await expect(
       pool.query('SELECT reserved_atomic FROM wallets WHERE id = $1', [
-        'wallet-1',
+        WALLET_ID,
       ]),
     ).resolves.toMatchObject({ rows: [{ reserved_atomic: '10000000' }] });
     await expect(request('reused-key', '10')).resolves.toEqual(original);
@@ -273,8 +282,8 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     // concurrently would be a more literal reproduction but would simply
     // deadlock against the transaction's own `FOR UPDATE` lock.
     const orphan = WalletAccount.reconstitute({
-      id: randomUUID(),
-      userId: 'user-123',
+      id: uuidV7Generator<'WalletId'>().next(),
+      userId: USER_ID,
       asset: Assets.USDT,
       balance: Money.parse('100', Assets.USDT),
       reservedBalance: Money.zero(Assets.USDT),
@@ -287,7 +296,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     // The guard aborts the transaction, so nothing partial is left behind.
     await expect(
       pool.query('SELECT reserved_atomic FROM wallets WHERE id = $1', [
-        'wallet-1',
+        WALLET_ID,
       ]),
     ).resolves.toMatchObject({ rows: [{ reserved_atomic: '0' }] });
   });
@@ -297,7 +306,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
       transactionRunner: transaction,
       stuckWithdrawals: new PostgresStuckWithdrawalQuery(transaction),
       outbox: new PostgresOutbox(transaction),
-      eventIdGenerator: { next: randomUUID },
+      eventIdGenerator: uuidV7Generator<'EventId'>(),
       clock: { now: () => new Date() },
       processingTimeoutMs: 15 * 60 * 1000,
       batchSize: 50,
@@ -307,7 +316,7 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
   function request(idempotencyKey: string, amount: string) {
     return useCase.execute({
       idempotencyKey,
-      userId: 'user-123',
+      userId: USER_ID,
       amount: Money.parse(amount, Assets.USDT),
       destinationAddress: 'TXYZ123456789',
     });

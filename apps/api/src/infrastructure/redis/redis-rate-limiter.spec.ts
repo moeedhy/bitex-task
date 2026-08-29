@@ -1,4 +1,9 @@
 import { RedisRateLimiter } from './redis-rate-limiter.js';
+import { UserId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
 
 describe('RedisRateLimiter', () => {
   const clientReturning = (count: number) => ({
@@ -8,24 +13,24 @@ describe('RedisRateLimiter', () => {
   it('allows a request inside the configured window limit', async () => {
     const limiter = new RedisRateLimiter(clientReturning(10) as never, 10, 60);
 
-    await expect(limiter.allow('user-123')).resolves.toBe(true);
+    await expect(limiter.allow(USER_ID)).resolves.toBe(true);
   });
 
   it('rejects requests above the configured window limit', async () => {
     const limiter = new RedisRateLimiter(clientReturning(11) as never, 10, 60);
 
-    await expect(limiter.allow('user-123')).resolves.toBe(false);
+    await expect(limiter.allow(USER_ID)).resolves.toBe(false);
   });
 
   it('counts and expires in one round trip so a crash cannot leak a key', async () => {
     const client = clientReturning(1);
     const limiter = new RedisRateLimiter(client as never, 10, 60, () => 0);
 
-    await limiter.allow('user-123');
+    await limiter.allow(USER_ID);
 
     expect(client.eval).toHaveBeenCalledTimes(1);
     expect(client.eval.mock.calls[0][1]).toEqual({
-      keys: ['withdrawal-rate:user-123:0'],
+      keys: [`withdrawal-rate:${USER_ID}:0`],
       arguments: ['60'],
     });
   });
@@ -35,15 +40,15 @@ describe('RedisRateLimiter', () => {
     let now = 0;
     const limiter = new RedisRateLimiter(client as never, 10, 60, () => now);
 
-    await limiter.allow('user-123');
+    await limiter.allow(USER_ID);
     now = 60_000;
-    await limiter.allow('user-123');
+    await limiter.allow(USER_ID);
 
     expect(client.eval.mock.calls[0][1].keys).toEqual([
-      'withdrawal-rate:user-123:0',
+      `withdrawal-rate:${USER_ID}:0`,
     ]);
     expect(client.eval.mock.calls[1][1].keys).toEqual([
-      'withdrawal-rate:user-123:1',
+      `withdrawal-rate:${USER_ID}:1`,
     ]);
   });
 
@@ -53,6 +58,6 @@ describe('RedisRateLimiter', () => {
     };
     const limiter = new RedisRateLimiter(client as never, 10, 60);
 
-    await expect(limiter.allow('user-123')).resolves.toBe(true);
+    await expect(limiter.allow(USER_ID)).resolves.toBe(true);
   });
 });

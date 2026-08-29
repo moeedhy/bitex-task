@@ -16,8 +16,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The seeded wallet is `user-123`, `USDT`, with `1000` available USDT (seeding is
-enabled by `SEED_DEV_DATA=true`, which compose sets for local runs).
+The seeded wallet belongs to user `00000000-0000-7000-8000-000000000001` and
+holds `1000` available `USDT` (seeding is enabled by `SEED_DEV_DATA=true`, which
+compose sets for local runs).
+
+Every identifier in this service is a UUID, including `userId` — see
+`docs/DECISIONS.md` §27 for why, and for the one-file change that reverts it.
 
 The application applies pending migrations on boot, so `docker compose up` works
 against a fresh volume or one created by an earlier version.
@@ -28,7 +32,7 @@ against a fresh volume or one created by an earlier version.
 curl -i http://localhost:3000/withdrawals \
   -H 'content-type: application/json' \
   -H 'Idempotency-Key: 5b44de87-cd75-475f-9cb9-09533dd55971' \
-  -d '{"userId":"user-123","asset":"USDT","amount":"100","destinationAddress":"TXYZ123456789"}'
+  -d '{"userId":"00000000-0000-7000-8000-000000000001","asset":"USDT","amount":"100","destinationAddress":"TXYZ123456789"}'
 ```
 
 ```bash

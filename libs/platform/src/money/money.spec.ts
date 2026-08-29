@@ -158,7 +158,7 @@ describe('Money', () => {
       const BTC = Asset.create('BTC', 8);
 
       expect(() =>
-        Money.parse('1', USDT).compare(Money.parse('1', BTC)),
+        Money.parse('1', USDT).isGreaterThan(Money.parse('1', BTC)),
       ).toThrow(AssetMismatchError);
     });
 
@@ -190,25 +190,13 @@ describe('Money', () => {
     const two = () => Money.parse('2', USDT);
 
     it('compares monetary values', () => {
-      expect(one().compare(two())).toBe(-1);
-      expect(two().compare(one())).toBe(1);
-      expect(one().compare(one())).toBe(0);
-    });
-
-    it('supports intention-revealing comparison methods', () => {
-      expect(one().isLessThan(two())).toBe(true);
-      expect(one().isLessThanOrEqual(two())).toBe(true);
       expect(two().isGreaterThan(one())).toBe(true);
-      expect(two().isGreaterThanOrEqual(one())).toBe(true);
+      expect(one().isGreaterThan(two())).toBe(false);
       expect(one().isGreaterThan(one())).toBe(false);
     });
   });
 
   describe('sign predicates', () => {
-    it('identifies zero', () => {
-      expect(Money.parse('0', USDT).isZero()).toBe(true);
-    });
-
     it('identifies positive amounts', () => {
       expect(Money.parse('1', USDT).isPositive()).toBe(true);
     });

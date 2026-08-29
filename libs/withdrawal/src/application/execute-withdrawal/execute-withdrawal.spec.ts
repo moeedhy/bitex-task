@@ -3,17 +3,25 @@ import { Withdrawal } from '../../domain/withdrawal.js';
 import { WithdrawalExecutionUnresolvedError } from '../withdrawal.errors.js';
 import { ExecuteWithdrawal } from './execute-withdrawal.js';
 import type { ExecuteWithdrawalDependencies } from './execute-withdrawal.js';
+import { EventId, ReservationId, UserId, WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+const RESERVATION_ID = ReservationId.parse('44444444-4444-4444-8444-444444444444');
+const EVENT_ID = EventId.parse('55555555-5555-4555-8555-555555555555');
 
 describe('ExecuteWithdrawal', () => {
   const createHarness = (
     providerStatus: 'SUCCESS' | 'FAILED' | 'THROWS' = 'SUCCESS',
   ) => {
     const withdrawal = Withdrawal.request({
-      id: 'withdrawal-1',
-      userId: 'user-123',
+      id: WITHDRAWAL_ID,
+      userId: USER_ID,
       amount: Money.parse('100', Assets.USDT),
       destinationAddress: 'TXYZ123456789',
-      reservationId: 'reservation-1',
+      reservationId: RESERVATION_ID,
       createdAt: new Date('2026-08-15T10:00:00.000Z'),
     });
     const processed = new Set<string>();
@@ -93,15 +101,15 @@ describe('ExecuteWithdrawal', () => {
     const harness = createHarness('SUCCESS');
 
     await harness.useCase.execute({
-      eventId: 'event-1',
-      withdrawalId: 'withdrawal-1',
+      eventId: EVENT_ID,
+      withdrawalId: WITHDRAWAL_ID,
     });
 
     expect(harness.withdrawal.status).toBe('COMPLETED');
     expect(harness.withdrawal.transactionReference).toBe('tx-1');
     expect(harness.finalizeCalls).toBe(1);
     expect(harness.releaseCalls).toBe(0);
-    expect(harness.processed.has('event-1')).toBe(true);
+    expect(harness.processed.has(EVENT_ID)).toBe(true);
     expect(harness.transactionCalls).toBe(2);
   });
 
@@ -109,14 +117,14 @@ describe('ExecuteWithdrawal', () => {
     const harness = createHarness('FAILED');
 
     await harness.useCase.execute({
-      eventId: 'event-1',
-      withdrawalId: 'withdrawal-1',
+      eventId: EVENT_ID,
+      withdrawalId: WITHDRAWAL_ID,
     });
 
     expect(harness.withdrawal.status).toBe('FAILED');
     expect(harness.finalizeCalls).toBe(0);
     expect(harness.releaseCalls).toBe(1);
-    expect(harness.processed.has('event-1')).toBe(true);
+    expect(harness.processed.has(EVENT_ID)).toBe(true);
   });
 
   it('leaves an unresolved provider call PROCESSING instead of failing it', async () => {
@@ -124,24 +132,24 @@ describe('ExecuteWithdrawal', () => {
 
     await expect(
       harness.useCase.execute({
-        eventId: 'event-1',
-        withdrawalId: 'withdrawal-1',
+        eventId: EVENT_ID,
+        withdrawalId: WITHDRAWAL_ID,
       }),
     ).rejects.toThrow(WithdrawalExecutionUnresolvedError);
 
     expect(harness.withdrawal.status).toBe('PROCESSING');
     expect(harness.finalizeCalls).toBe(0);
     expect(harness.releaseCalls).toBe(0);
-    expect(harness.processed.has('event-1')).toBe(false);
+    expect(harness.processed.has(EVENT_ID)).toBe(false);
   });
 
   it('does not call the provider or settle a processed event twice', async () => {
     const harness = createHarness('SUCCESS');
-    harness.processed.add('event-1');
+    harness.processed.add(EVENT_ID);
 
     await harness.useCase.execute({
-      eventId: 'event-1',
-      withdrawalId: 'withdrawal-1',
+      eventId: EVENT_ID,
+      withdrawalId: WITHDRAWAL_ID,
     });
 
     expect(harness.providerCalls).toBe(0);

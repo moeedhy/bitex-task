@@ -4,7 +4,10 @@ import type {
   IdGenerator,
   Money,
   Outbox,
+  ReservationId,
   TransactionRunner,
+  UserId,
+  WithdrawalId,
 } from '@bitex/platform';
 import { Withdrawal } from '../../domain/withdrawal.js';
 import type { WithdrawalStatus } from '../../domain/withdrawal.js';
@@ -19,13 +22,13 @@ import { createRequestFingerprint } from './request-fingerprint.js';
  */
 export interface RequestWithdrawalCommand {
   idempotencyKey: string;
-  userId: string;
+  userId: UserId;
   amount: Money;
   destinationAddress: string;
 }
 
 export interface RequestWithdrawalResult {
-  withdrawalId: string;
+  withdrawalId: WithdrawalId;
   status: WithdrawalStatus;
   asset: string;
   amount: string;
@@ -33,10 +36,10 @@ export interface RequestWithdrawalResult {
 
 export interface WalletReservationPort {
   reserve(input: {
-    withdrawalId: string;
-    userId: string;
+    withdrawalId: WithdrawalId;
+    userId: UserId;
     amount: Money;
-  }): Promise<{ reservationId: string }>;
+  }): Promise<{ reservationId: ReservationId }>;
 }
 
 /**
@@ -65,8 +68,8 @@ export interface RequestWithdrawalDependencies {
   walletReservation: WalletReservationPort;
   withdrawals: WithdrawalRepository;
   outbox: Outbox;
-  withdrawalIdGenerator: IdGenerator;
-  eventIdGenerator: IdGenerator;
+  withdrawalIdGenerator: IdGenerator<'WithdrawalId'>;
+  eventIdGenerator: IdGenerator<'EventId'>;
   clock: Clock;
 }
 

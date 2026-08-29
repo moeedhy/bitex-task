@@ -1,9 +1,17 @@
 import { WithdrawalNotFoundError } from '../withdrawal.errors.js';
 import { GetWithdrawal } from './get-withdrawal.js';
+import { WithdrawalId } from '@bitex/platform';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const WITHDRAWAL_ID = WithdrawalId.parse('11111111-1111-4111-8111-111111111111');
+const MISSING_WITHDRAWAL_ID = WithdrawalId.parse(
+  '11111111-1111-4111-8111-1111111110ff',
+);
 
 describe('GetWithdrawal', () => {
   const view = {
-    withdrawalId: 'withdrawal-1',
+    withdrawalId: WITHDRAWAL_ID,
     status: 'COMPLETED' as const,
     asset: 'USDT',
     amount: '100',
@@ -14,13 +22,13 @@ describe('GetWithdrawal', () => {
   it('returns the slice-specific read model', async () => {
     const query = new GetWithdrawal({ getById: async () => view });
 
-    await expect(query.execute('withdrawal-1')).resolves.toEqual(view);
+    await expect(query.execute(WITHDRAWAL_ID)).resolves.toEqual(view);
   });
 
   it('rejects an unknown withdrawal', async () => {
     const query = new GetWithdrawal({ getById: async () => null });
 
-    await expect(query.execute('missing')).rejects.toThrow(
+    await expect(query.execute(MISSING_WITHDRAWAL_ID)).rejects.toThrow(
       WithdrawalNotFoundError,
     );
   });

@@ -1,4 +1,4 @@
-import { Asset, Assets, Money } from '@bitex/platform';
+import { Asset, Assets, InvalidIdentityError, Money } from '@bitex/platform';
 import {
   InsufficientAvailableBalanceError,
   InsufficientReservedBalanceError,
@@ -7,13 +7,20 @@ import {
   WalletAssetMismatchError,
 } from './wallet.errors.js';
 import { WalletAccount } from './wallet-account.js';
+import { UserId } from '@bitex/platform';
+import { WalletId } from './wallet-id.js';
+
+// Fixed identities. Parsed rather than cast, so the fixtures are
+// exactly what the production edges accept.
+const USER_ID = UserId.parse('22222222-2222-4222-8222-222222222222');
+const WALLET_ID = WalletId.parse('33333333-3333-4333-8333-333333333333');
 
 describe('WalletAccount', () => {
   const amount = (value: string) => Money.parse(value, Assets.USDT);
   const createWallet = () =>
     WalletAccount.create({
-      id: 'wallet-1',
-      userId: 'user-123',
+      id: WALLET_ID,
+      userId: USER_ID,
       asset: Assets.USDT,
       balance: amount('100'),
     });
@@ -29,8 +36,8 @@ describe('WalletAccount', () => {
   it('rejects a negative opening balance', () => {
     expect(() =>
       WalletAccount.create({
-        id: 'wallet-1',
-        userId: 'user-123',
+        id: WALLET_ID,
+        userId: USER_ID,
         asset: Assets.USDT,
         balance: amount('-1'),
       }),
@@ -40,8 +47,8 @@ describe('WalletAccount', () => {
   it('rejects persisted reserved balance above total balance', () => {
     expect(() =>
       WalletAccount.reconstitute({
-        id: 'wallet-1',
-        userId: 'user-123',
+        id: WALLET_ID,
+        userId: USER_ID,
         asset: Assets.USDT,
         balance: amount('100'),
         reservedBalance: amount('101'),
@@ -52,8 +59,8 @@ describe('WalletAccount', () => {
   it('rejects persisted negative reserved balance', () => {
     expect(() =>
       WalletAccount.reconstitute({
-        id: 'wallet-1',
-        userId: 'user-123',
+        id: WALLET_ID,
+        userId: USER_ID,
         asset: Assets.USDT,
         balance: amount('100'),
         reservedBalance: amount('-1'),
@@ -61,22 +68,23 @@ describe('WalletAccount', () => {
     ).toThrow(InvalidWalletStateError);
   });
 
-  it('rejects a blank identity', () => {
-    expect(() =>
-      WalletAccount.create({
-        id: '   ',
-        userId: 'user-123',
-        asset: Assets.USDT,
-        balance: amount('100'),
-      }),
-    ).toThrow(InvalidWalletStateError);
+  /**
+   * The aggregate no longer re-checks its own identities: a `WalletId` cannot
+   * be constructed without going through `WalletId.parse`, so the check happens
+   * once, at the edge where a raw string arrives. The old guard here accepted
+   * anything non-blank -- `'wallet-!!!'` passed it -- which is why this
+   * assertion moved rather than being deleted.
+   */
+  it('cannot be given an identity that was never parsed', () => {
+    expect(() => WalletId.parse('   ')).toThrow(InvalidIdentityError);
+    expect(() => WalletId.parse('wallet-1')).toThrow(InvalidIdentityError);
   });
 
   it('rejects a balance denominated in another asset', () => {
     expect(() =>
       WalletAccount.create({
-        id: 'wallet-1',
-        userId: 'user-123',
+        id: WALLET_ID,
+        userId: USER_ID,
         asset: Assets.USDT,
         balance: Money.parse('1', Asset.create('BTC', 8)),
       }),
@@ -185,8 +193,8 @@ describe('WalletAccount', () => {
 
   it('reconstitutes valid persisted balance state', () => {
     const wallet = WalletAccount.reconstitute({
-      id: 'wallet-1',
-      userId: 'user-123',
+      id: WALLET_ID,
+      userId: USER_ID,
       asset: Assets.USDT,
       balance: amount('100'),
       reservedBalance: amount('80'),
