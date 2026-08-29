@@ -26,7 +26,6 @@ const flag = z
 
 const schema = z.object({
   PORT: port.default(3000),
-  GLOBAL_PREFIX: z.string().default('api'),
 
   DATABASE_URL: z
     .string()

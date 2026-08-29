@@ -77,6 +77,13 @@ to the contexts' tokens; it contains no business logic.
 contracts, DI — and says which rules are enforced by the build rather than by
 review.
 
+**Which documents are the answer.** All of them: `docs/` holds exactly four —
+[architecture](docs/ARCHITECTURE.md), [domain model](docs/DOMAIN_MODEL.md),
+[decisions](docs/DECISIONS.md), [conventions](docs/CONVENTIONS.md) — alongside
+the brief itself in `TASK.md`. There is no second tier of superseded planning
+documents to reconcile against; where a decision changed, `DECISIONS.md` records
+both the change and what it replaced.
+
 **On the deliverables layout.** The brief sketches a flat `src/` + `test/` tree.
 This is an Nx monorepo, so neither exists at the root: the code lives in `apps/`
 and `libs/`, and tests are colocated with what they cover (`*.spec.ts`) so a
@@ -144,7 +151,7 @@ remembers to export it locally.
 - `processed_events` and `idempotency_records` have no retention policy; `outbox_events` does.
 - The fake provider stores its result in PostgreSQL to model provider-side idempotency. A real provider needs an idempotency key, lookup API, or reconciliation process.
 - Kafka and the outbox provide at-least-once delivery, not exactly-once external effects.
-- Actual implementation time: approximately 2 hours of AI-assisted implementation and verification, followed by a structured architecture review and refactor (`docs/plans/REFACTOR_PLAN.md`).
+- Actual implementation time: approximately 2 hours of AI-assisted implementation and verification, followed by a structured twelve-criteria architecture review and a phased refactor. What that review changed is recorded as `docs/DECISIONS.md` §23-§51; the prompt behind it is `ai/prompts/04-architecture-review.md`.
 
 See [architecture](docs/ARCHITECTURE.md), [domain model](docs/DOMAIN_MODEL.md),
 [conventions](docs/CONVENTIONS.md), and [decisions](docs/DECISIONS.md).

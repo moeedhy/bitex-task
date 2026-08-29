@@ -6,11 +6,107 @@ Wallet and Withdrawal have separate domain ownership and Nx packages. Cross-boun
 
 ## 2. PostgreSQL row locking protects balances
 
-Wallet mutation uses `SELECT ... FOR UPDATE`. In-memory or Redis locks cannot protect the source of truth across processes. Database checks provide defense in depth.
+**Pessimistic row locking.** `ReserveFunds` opens with
+`wallets.getForUpdate(userId, asset)` — a `SELECT … FOR UPDATE` on the one
+wallet row — then mutates the aggregate in memory and writes it back inside the
+same transaction. The contended row is known before any write, because a wallet
+is addressed by `(user_id, asset)`, and it stays locked until commit.
+
+The brief lists four acceptable strategies. Why this one:
+
+*Versus optimistic concurrency (a version column and a retry loop).* The request
+transaction performs five writes across four tables: the idempotency claim, the
+wallet update, the reservation insert, the withdrawal insert and the outbox
+insert. A version conflict detected at the wallet write throws all of that away,
+and the retry has to re-run the idempotency claim — a durable record keyed by
+the caller's key, not a pure computation. Optimistic control is the right trade
+when conflicts are rare; here contention on one wallet row is the *expected*
+case, and it is the case the brief asks to be demonstrated.
+
+*Versus a conditional `UPDATE`* (`SET reserved = reserved + $1 WHERE reserved + $1 <= balance`).
+Correct for the balance arithmetic in isolation, and genuinely cheaper — one
+round trip, no lock held across the transaction. Rejected because it relocates
+the invariant. The rule "available balance may not go negative" would live in a
+SQL predicate rather than in `WalletAccount`, which is precisely the shape the
+brief's §23 names as a weak submission, and the aggregate would be reduced to a
+data holder that reports what the database already decided. It also does not
+generalise: the reservation row, the withdrawal row and the outbox row need the
+same serialisation, and a conditional update protects one column of one table.
+
+*Versus `SERIALIZABLE`.* Correct, and the least code. Rejected because it
+converts contention into `40001` serialisation failures that every caller must
+retry, which puts the retry loop — and the same re-run-durable-side-effects
+problem as optimistic control — into the HTTP adapter for a conflict this design
+can simply wait out. Predictable blocking on a known row is easier to reason
+about and to bound than a retry storm.
+
+The lock is a **row** lock rather than an advisory lock so PostgreSQL's deadlock
+detector can see it, and so it is released by commit or rollback rather than by
+remembering to release it. The wait is bounded by a transaction-local
+`lock_timeout` (§17), and the lock order is fixed at wallet → reservation →
+withdrawal (§25).
+
+The observable outcome is the point: the loser of two concurrent 80 USDT
+withdrawals against a 100 USDT wallet fails with
+`InsufficientAvailableBalanceError` — the domain rule — not with a lock timeout
+or a constraint violation. The integration test asserts that specific error for
+that reason; a test that accepted any rejection would pass on a `lock_timeout`
+while proving nothing.
+
+In-memory locks cannot protect a source of truth that more than one process
+writes, and Redis is not in this path at all (§52). The `CHECK` constraints on
+`balance_atomic`, `reserved_atomic` and `reserved_atomic <= balance_atomic` are
+a backstop against a defect in the layer above, not the mechanism.
 
 ## 3. Durable idempotency with payload fingerprints
 
-PostgreSQL owns `(operation, idempotency_key)`. Canonical request fingerprints distinguish legitimate replay from key reuse with different data. The claim occurs before Wallet locking.
+The brief asks four specific questions. Answering them in order:
+
+**Where the record is stored.** PostgreSQL, in `idempotency_records`, with
+`PRIMARY KEY (operation, idempotency_key)`. The key is scoped by operation so a
+second endpoint cannot collide with withdrawal creation on a caller's key. The
+record is written in the *same transaction* as the wallet mutation, the
+withdrawal and the outbox event, so there is no window in which a key is claimed
+but its effects are not — or the reverse. Redis caches nothing on this path
+(§52); the durable guarantee is the table.
+
+**Whether payload fingerprinting is used.** Yes. `RequestWithdrawal` derives the
+fingerprint inside the workflow, from parsed values — after `Money.parse` and
+after `WithdrawalAddress` normalisation — rather than from the raw body, so a
+request that differs only in decimal formatting or address casing is recognised
+as the same request. Fields are length-prefixed so caller-supplied content
+cannot forge a field boundary. It is never supplied by the caller (§14).
+
+**Same key, different payload.** The claim returns `CONFLICT`, the use case
+raises `IdempotencyKeyConflictError`, and the HTTP layer answers **409**. The
+original withdrawal is untouched — the second request never reaches the wallet,
+so nothing is reserved and no second outbox event exists. Refusing is the only
+safe answer: honouring it under the caller's key would create a second
+withdrawal the caller believes is the first, and replaying the stored response
+would answer a question the caller did not ask.
+
+**Simultaneous requests with the same key.** They serialise on the unique index.
+The claim is `INSERT … ON CONFLICT (operation, idempotency_key) DO NOTHING
+RETURNING`, and the loser's `INSERT` blocks inside PostgreSQL until the
+claiming transaction commits or rolls back. On commit it reads a row that is
+already `COMPLETED` and returns `REPLAY` with the stored response; on rollback
+the key is free and it claims normally. Exactly one withdrawal, one reservation
+and one outbox event result — asserted by an integration test that fires both
+concurrently.
+
+That follow-up read is deliberately **not** `FOR UPDATE`. It cannot need to be:
+reaching it means the insert already blocked on the index until the claim
+resolved, and a `COMPLETED` record is never rewritten. The earlier `FOR UPDATE`
+held the row for the whole outer transaction, so a retry storm on one key queued
+every duplicate behind the 3s `lock_timeout` and turned cheap replays into
+`55P03` failures — the exact load this table exists to absorb.
+
+**Claim before wallet lock.** The order is deliberate. Claiming first means a
+duplicate burst is rejected or replayed before it ever contends for the wallet
+row, so the expensive lock is taken once per logical request rather than once
+per retry. It also means an abandoned claim rolls back with the workflow: a
+request that fails a business rule leaves its key reusable rather than burning
+it (§13).
 
 ## 4. Explicit TransactionRunner and AsyncLocalStorage
 
@@ -18,7 +114,40 @@ Application slices own transaction boundaries through a provider-neutral `Transa
 
 ## 5. Modular monolith, not microservices or Saga
 
-The required consistency fits a short local transaction. Splitting databases would add intermediate states, compensation, inbox/outbox coordination, and operational failure modes without helping this challenge.
+**What the consistency requirement actually demands.** Reserving funds and
+creating the withdrawal must both happen or neither must. In one database that
+is one `BEGIN`/`COMMIT` and the requirement is discharged by PostgreSQL. Across
+two services it becomes a workflow: reserve over RPC, create the withdrawal,
+and compensate the reservation when the second step fails — which introduces an
+intermediate state where funds are held against a withdrawal that does not
+exist, a compensating release that can itself fail, and a reconciliation sweep
+to find reservations that were orphaned when a process died between the two.
+That is a saga, and the brief puts complex reconciliation and event sourcing
+explicitly out of scope.
+
+**What a split would buy, and whether this system needs it.** Independent
+deployment and independent scaling. Neither applies: both contexts ship in one
+release, and the load profile is identical because the same wallet row is the
+hot spot in both. Splitting would multiply the operational surface — two
+deployables, an inbox on the wallet side, a process manager on the withdrawal
+side — to solve a scaling problem this service does not have, while making the
+one property it *does* need (atomic reserve-and-create) strictly harder.
+
+**The boundary is real regardless of the deployment.** The monolith is a
+deployment decision, not a modelling one. Wallet and Withdrawal are separate Nx
+packages with `type:`/`scope:` tags; a Withdrawal-to-Wallet import fails `lint`
+(§18); Withdrawal reaches Wallet only through the two capability ports it owns,
+`wallet-reservation.port.ts` and `wallet-settlement.port.ts`, adapted at the
+composition root (§6); and `WalletModule` exports use cases while keeping its
+repositories private, so the container enforces what the lint rule states
+(§40). Withdrawal has never seen a wallet aggregate or a wallet table.
+
+**If the split were ever justified,** those ports are the seam — the adapter
+behind them becomes an RPC client, and that part is a composition-root change.
+What is *not* a composition-root change is the atomicity: it would need the
+process manager and the compensation described above. The honest statement is
+that the local transaction cannot be pretended across a service boundary, which
+is why the boundary is drawn in the package graph and not in the network.
 
 ## 6. Consumer-owned ports
 
@@ -42,7 +171,7 @@ Migration `002_domain_aggregate_refactor.sql` backfills the reservation asset be
 
 ## 11. `Money` is signed; aggregates own non-negativity
 
-`Money` models a signed exact quantity: `subtract` may return a negative result and `parse` accepts a leading `-`. The domain plan suggests a non-negative amount type instead, so this is a deliberate divergence.
+`Money` models a signed exact quantity: `subtract` may return a negative result and `parse` accepts a leading `-`. The obvious alternative — a type that cannot hold a negative value at all — was considered and rejected, so this is a deliberate divergence rather than an omission.
 
 A signed type lets `availableBalance` be a plain `balance - reserved` with no special case, and keeps `Money` a pure arithmetic value object rather than one carrying a wallet-specific rule. Non-negativity is enforced where it is actually a business rule, at three layers: `RequestWithdrawal` calls `Withdrawal.assertRequestable` before any wallet row is touched, so a non-positive amount is rejected by the withdrawal aggregate rather than surfacing as `INVALID_WALLET_AMOUNT` from a module the caller never addressed; `WalletAccount.assertOperationAmount` rejects non-positive operands; and `WalletAccount.assertBalances` rejects negative balances on creation, reconstitution, and every mutation. Database `CHECK` constraints repeat the last of these.
 
@@ -84,9 +213,15 @@ Projects carry `type:` and `scope:` tags and `@nx/enforce-module-boundaries` enc
 
 ## 19. Nest modules mirror the bounded contexts
 
-Composition lives in `WalletModule`, `WithdrawalModule`, `PersistenceModule`, `RedisModule` and `MessagingModule` rather than in one runtime object that the controller reads through. The controller now receives `RequestWithdrawal` and `GetWithdrawal` by constructor injection and can reach nothing else.
+Composition lives in per-boundary modules rather than in one runtime object that the controller reads through. The controller receives `RequestWithdrawal` and `GetWithdrawal` by constructor injection and can reach nothing else. Ports stay plain TypeScript interfaces resolved inside the factories, which keeps NestJS out of `libs/*` entirely while still giving the container a real dependency graph — one that `composition.spec.ts` compiles on every test run, so a wiring mistake fails a test instead of a deployment.
 
-Providers are registered with `useFactory` against class tokens. Ports stay plain TypeScript interfaces resolved inside the factories, which keeps NestJS out of `libs/*` entirely while still giving the container a real dependency graph — one that `composition.spec.ts` compiles on every test run, so a wiring mistake fails a test instead of a deployment.
+**Partly superseded — two specifics in the original entry are no longer true.**
+
+*Where the modules live.* This entry named `WalletModule`, `WithdrawalModule`, `PersistenceModule`, `RedisModule` and `MessagingModule` as five modules in the application. The first two now live in the libraries that own those boundaries, behind a `./nest` subpath, and the application adds `WalletAdaptersModule`, `WithdrawalAdaptersModule` and `WithdrawalContextModule`. §40.
+
+*How providers are registered.* "Registered with `useFactory` against class tokens" described the arrangement this decision replaced and then outlived it. A class used as a DI key makes the binding unoverridable in a test, and `useFactory` correlates a positional `inject` array with positional parameters by hand. Both are gone: keys are branded symbol tokens and wiring goes through `provide()`, which type-checks the factory against its dependency list. §41.
+
+The decision itself — the container mirrors the boundaries instead of flattening them — is what held. `ARCHITECTURE.md` carries the current tree.
 
 ## 20. The integration event carries only what the consumer needs
 
@@ -581,8 +716,78 @@ quietly edited:
   limits exist to prevent, and the paragraph now says which and why.
 - `ARCHITECTURE.md` claimed correlation-id propagation and structured failure
   context. Both are now true; see §47.
-- `APPLICATION_PLAN.md` listed outbox pruning as future work. It was already
-  implemented.
+- A known-limitations list carried outbox pruning as future work. It was
+  already implemented — `OutboxPublisher.pruneIfDue` removes published rows past
+  `OUTBOX_RETENTION_MS`.
+
+A second pass over this repository's own documentation found four more, all
+from the same cause — a claim that was true when written and outlived the code
+it described:
+
+- `ARCHITECTURE.md` showed a container tree in which `WithdrawalModule` imported
+  `WalletModule` and `WalletModule` imported `PersistenceModule`. It has not
+  been that shape since §40. The tree is replaced rather than annotated: a
+  reader parses a diagram before reaching the retraction under it, which is why
+  correcting prose in place works and correcting a diagram in place does not.
+- `ARCHITECTURE.md` and §19 both said every provider is registered with
+  `useFactory` against a class token. `useFactory` survives in four places, and
+  §41 replaced class tokens with branded symbols throughout. §19 now carries the
+  supersession because a decision log should keep what it decided; the
+  architecture document carries only what is true.
+- `CONVENTIONS.md` says every variable belongs in `.env.example` and §43 says
+  the file is reconciled against the schema. Neither held:
+  `KAFKA_TOPIC_PARTITIONS` and `KAFKA_TOPIC_REPLICATION_FACTOR` were undocumented
+  — the first being the knob §44 argues at length is a deliberate choice.
+- Reconciling in the other direction found `GLOBAL_PREFIX`, declared in the
+  config schema with a default of `'api'` and **read by nothing**: `main.ts`
+  never calls `setGlobalPrefix`. Documenting it would have advertised a prefix
+  the API does not serve and contradicted every URL in `README.md`. It was
+  deleted instead. A validated config object earns its keep by failing at boot
+  on a bad value; a key nothing reads is a claim about the service's interface
+  that no test can falsify.
 
 A documented invariant that nothing enforces is worse than an undocumented one:
-it stops a reviewer from looking.
+it stops a reviewer from looking. The same is true of a documented knob that
+turns nothing.
+
+## 52. Redis is a rate limiter, and nothing else
+
+Gathered here because the brief asks three specific questions about Redis and
+the answers were previously spread across §22, §46 and `ARCHITECTURE.md`.
+
+**Why Redis is used.** One job: a fixed-window request counter, 10 withdrawal
+requests per user per minute (`WITHDRAWAL_RATE_LIMIT`,
+`WITHDRAWAL_RATE_LIMIT_WINDOW_SECONDS`). The increment and the expiry are one
+Lua script, so a crash between them cannot leave a key without a TTL. It is a
+counter shared across replicas that nobody needs to durably retain — the one
+shape an in-process counter genuinely cannot serve and PostgreSQL should not be
+asked to, since it would mean a write to the transactional store for every
+request that is about to be refused.
+
+**Why rate limiting rather than an idempotency cache.** Option A in the brief
+caches completed idempotency results. It was rejected: the idempotency record
+is read *inside* the transaction that claims it, and a cache in front of that
+read answers before the transaction exists. A cache populated from a
+transaction that later rolled back would replay a response for a withdrawal
+that was never created — trading a durable guarantee for a round trip. The
+claim path is a single indexed insert; it is not the bottleneck that would
+justify the risk.
+
+**What happens if Redis is unavailable.** Withdrawals continue. Every failure
+path in `RedisRateLimiter.allow` returns `true`, so an outage degrades
+throttling and nothing else. The connection is also started without being
+awaited (§22): an earlier version awaited it inside `onModuleInit` with
+indefinite retry, so a Redis outage prevented the service from ever listening —
+turning an optimisation into a hard startup dependency, and breaking the
+fail-open guarantee at exactly the moment it was supposed to hold. Requests
+arriving before the connection settles are simply not rate limited.
+
+**Why financial correctness does not depend on it.** Redis is not in the money
+path. It is consulted by a `RateLimitGuard` that runs before the request body is
+trusted, behind a `RateLimiter` interface declared at the HTTP edge (§46), and
+it is never read or written by a use case, a repository, or anything inside a
+transaction. Balances, reservations, idempotency and consumer deduplication are
+all PostgreSQL rows protected by row locks and constraints (§2, §3). Flushing
+Redis entirely would cost this service its abuse protection for one window and
+change no balance. That is the point of confining it to one job: the failure
+mode is stated in advance rather than discovered.

@@ -42,6 +42,60 @@ Terminal states cannot regress or repeat. `COMPLETED` requires a provider transa
 
 Wallet and Withdrawal are deployed together because requesting a Withdrawal requires strong consistency. A future database/service split would need a process manager and compensation rather than pretending the current local transaction can cross that boundary.
 
+## Entities
+
+There are none below the aggregate roots.
+
+`WalletAccount`, `WalletReservation` and `Withdrawal` are each an aggregate of
+exactly one entity: their state is a flat snapshot of value objects, and every
+invariant one of them owns is expressible over its own row. Nothing here is a
+child entity with an identity that only means something inside a parent — the
+obvious candidate, `WalletReservation`, was deliberately made a **separate root**
+rather than a child of `WalletAccount`, because holding reservation history
+inside the wallet would force every balance mutation to load a collection that
+grows without bound (§7).
+
+Saying so explicitly matters more than it looks: an aggregate whose root has no
+children is the shape that makes single-row locking sufficient. The moment a
+collection lives inside a root, the lock has to cover the collection too.
+
+## Invariants
+
+The brief requires nine. Each is enforced by an aggregate; the database repeats
+several as a backstop against a defect in the layer above, never as the
+mechanism.
+
+| # | Invariant | Enforced by | Database backstop |
+|---|---|---|---|
+| 1 | Withdrawal amount > 0 | `Withdrawal.assertRequestable` (before any wallet row is touched) and `WalletAccount.assertOperationAmount` | `CHECK (amount_atomic > 0)` on `withdrawals` and `wallet_reservations` |
+| 2 | Available balance never negative | `WalletAccount.assertBalances`, on creation, reconstitution and after every mutation | `CHECK (balance_atomic >= 0)` |
+| 3 | Reserved never exceeds total | the same `assertBalances` — the two are one check over one candidate state | `wallets_reserved_not_above_balance` |
+| 4 | One reservation per withdrawal request | `ReserveFunds` mints one reservation per withdrawal identity, created before the reservation exists | `wallet_reservations.withdrawal_id UNIQUE`, `withdrawals.reservation_id UNIQUE`, and the composite ownership FK |
+| 5 | One withdrawal per Idempotency-Key | `RequestWithdrawal` claims before it reserves; `CLAIMED`/`REPLAY`/`CONFLICT` handled exhaustively | `PRIMARY KEY (operation, idempotency_key)` — the claim *is* the insert |
+| 6 | A Kafka event settles at most once | `Withdrawal.isTerminal()` refuses a second settlement even under a fresh event id | `processed_events` PK on `event_id`, written in the settlement transaction |
+| 7 | No regression from a terminal state | `Withdrawal.transitioned(expected, target)` throws `InvalidWithdrawalTransitionError` unless the current status is the expected source | `CHECK (status IN …)` and `withdrawals_terminal_payload_check` |
+| 8 | A failed withdrawal releases its reservation | `Withdrawal.fail()` emits `WithdrawalFailed{reservationId}`; `ExecuteWithdrawal` discharges it in a `switch` closed by `assertNever` | `wallet_reservations.status` transition is written in the same transaction |
+| 9 | No floating-point money | `Money` holds `bigint` atomic units and `parse` rejects non-canonical decimals; no `number` ever holds an amount | `BIGINT` columns; decimal **strings** on the wire |
+
+Two of these are worth reading twice.
+
+**§2 and §3 are one check, not two.** `assertBalances` validates a candidate
+snapshot — `0 <= reserved <= total` — and the aggregate only swaps its state in
+once that passes (validate-then-swap). A rejected `reserve` is a no-op rather
+than a half-applied mutation, which is why "available never goes negative"
+survives a rejected transition as well as an accepted one.
+
+**§7 is enforced on the source, not the target.** `transitioned` names the
+status the caller expects to be in. `COMPLETED → PROCESSING` fails not because
+`PROCESSING` is forbidden but because the withdrawal is not `PENDING`, which is
+the only form of the rule that stays correct as states are added.
+
+Concurrency does not appear in this table because it is not a domain concern:
+invariants 2, 3 and 4 hold *within* a transaction by aggregate logic, and hold
+*across* concurrent transactions by the `SELECT … FOR UPDATE` in
+`ReserveFunds` (`DECISIONS.md` §2). Both halves are required; neither
+substitutes for the other.
+
 ## Identity
 
 Every identifier is a branded UUID: `WithdrawalId`, `ReservationId`, `UserId`,

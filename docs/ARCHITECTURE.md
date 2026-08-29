@@ -12,28 +12,37 @@ domain <- application ports <- adapters <- Nest wiring
 
 Withdrawal owns the consumer-facing `WalletReservationPort` and `WalletSettlementPort`. The composition root adapts those narrow capabilities to Wallet application services. Withdrawal never imports Wallet repositories or aggregate internals.
 
-The Nest container mirrors those boundaries rather than flattening them:
+The Nest container mirrors those boundaries rather than flattening them. Each
+context ships its own module behind a `./nest` subpath export and wires its own
+use cases; the application chooses adapters and supplies them downward:
 
 ```text
-AppModule            HTTP controller and the exception filter
-  WithdrawalModule   withdrawal adapters + use cases; imports WalletModule
-    WalletModule     wallet repositories + balance operations
-      PersistenceModule   pool and the shared TransactionRunner
-  RedisModule        connection and the fail-open rate limiter
-  MessagingModule    outbox publisher, consumer, dead-letter sink, recovery worker
+AppModule                        controller, exception filter, rate-limit guard, correlation middleware
+  ConfigModule                   the one validated AppConfig
+  PlatformModule                 the system Clock (@Global — one clock, not convenience)
+  WithdrawalContextModule        calls WithdrawalModule.forRoot exactly once, re-exports the result
+    WithdrawalModule             withdrawal use cases, built from the tokens it declares
+      WithdrawalAdaptersModule   binds withdrawal ports to PostgreSQL, Kafka and the fake provider
+        WalletModule             wallet use cases; repositories stay private
+          WalletAdaptersModule   binds WALLET_REPOSITORY and WALLET_RESERVATION_REPOSITORY to PostgreSQL
+      PersistenceModule          the pool, TRANSACTION_RUNNER and TRANSACTIONAL_CLIENT
+  RedisModule                    connection and the fail-open rate limiter
+  MessagingModule                outbox publisher, consumer, dead-letter sink, recovery worker
 ```
 
-`WalletModule` exports its three use cases and keeps its repositories private, so
-no other module can reach a wallet aggregate directly — the boundary is enforced
-by the container as well as by the lint rule. Ports are plain interfaces, and
-every provider is registered with `useFactory` against a class token, so the
-libraries need no NestJS import to be injectable.
+`WalletModule` exports its two use cases — `RESERVE_FUNDS` and
+`SETTLE_RESERVATION` — and keeps its repositories private, so no other module
+can reach a wallet aggregate directly. `WithdrawalAdaptersModule` is where the
+two contexts meet: it adapts those use cases to Withdrawal's own
+`WALLET_RESERVATION` and `WALLET_SETTLEMENT` tokens. Neither library imports the
+other. The boundary is enforced by the container as well as by the lint rule.
 
-**Superseded.** Each library now ships its own Nest module behind a `./nest`
-subpath export. The property that rationale protected still holds — Nest appears
-only under `src/nest/`, so the domain and application layers import no framework
-— but a context that owns a boundary should own its composition. See
-`DECISIONS.md` §40.
+Ports stay plain TypeScript interfaces. DI keys are branded symbol tokens that
+remember what they resolve to, wired with `provide(target, deps, factory)`,
+which type-checks the factory's parameters against its dependency list —
+`useFactory` survives in four places where Nest's own shape is required. See
+`DECISIONS.md` §40 and §41 for why the contexts own their composition and what
+the previous `apps/api/src/composition/` arrangement cost.
 
 Layout on disk:
 
