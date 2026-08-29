@@ -13,9 +13,28 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./nest": {
+      "@bitex/source": "./src/nest/index.ts",
+      "types": "./dist/nest/index.d.ts",
+      "import": "./dist/nest/index.js",
+      "default": "./dist/nest/index.js"
     }
   },
   "dependencies": {
-    "tslib": "^2.3.0"
+    "tslib": "^2.3.0",
+    "uuid": "^14.0.2"
+  },
+  "nx": {
+    "tags": [
+      "type:platform",
+      "scope:shared"
+    ]
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^11.2.3"
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.2.3"
   }
 }

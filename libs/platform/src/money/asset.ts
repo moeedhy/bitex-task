@@ -19,10 +19,7 @@ export class Asset {
   }
 
   static create(code: string, decimals: number): Asset {
-    if (
-      typeof code !== 'string' ||
-      !ASSET_CODE_PATTERN.test(code)
-    ) {
+    if (typeof code !== 'string' || !ASSET_CODE_PATTERN.test(code)) {
       throw new InvalidAssetError(
         'Asset code must be 1-32 canonical uppercase characters using A-Z, 0-9, ".", "_" or "-".',
       );
@@ -42,10 +39,7 @@ export class Asset {
   }
 
   equals(other: Asset): boolean {
-    return (
-      this.code === other.code &&
-      this.decimals === other.decimals
-    );
+    return this.code === other.code && this.decimals === other.decimals;
   }
 
   toString(): string {

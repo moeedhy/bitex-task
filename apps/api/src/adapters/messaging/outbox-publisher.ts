@@ -1,0 +1,244 @@
+import { randomUUID } from 'node:crypto';
+import { encodeIntegrationEvent } from '@bitex/platform';
+import { CORRELATION_ID_HEADER } from '../../observability/correlation-id.middleware.js';
+import { Logger } from '@nestjs/common';
+import type { Producer } from 'kafkajs';
+import type { Pool, PoolClient } from 'pg';
+import { errorCode, errorMessage } from '@bitex/platform';
+
+export interface OutboxRow {
+  id: string;
+  event_type: string;
+  aggregate_id: string;
+  payload: Record<string, unknown>;
+  occurred_at: Date;
+  correlation_id: string | null;
+}
+
+export interface OutboxPublisherOptions {
+  intervalMs: number;
+  /** How long a published row is kept before it is pruned. */
+  retentionMs: number;
+  /** How often pruning is attempted, independent of the publish cadence. */
+  pruneIntervalMs: number;
+  batchSize: number;
+  leaseSeconds: number;
+}
+
+const DEFAULT_OPTIONS: OutboxPublisherOptions = {
+  intervalMs: 1_000,
+  retentionMs: 7 * 24 * 60 * 60 * 1000,
+  pruneIntervalMs: 60 * 60 * 1000,
+  batchSize: 20,
+  leaseSeconds: 30,
+};
+
+/**
+ * Turns a committed outbox row back into a Kafka message.
+ *
+ * The envelope shape is `encodeIntegrationEvent`'s, not this file's: the
+ * flattening used to be written out here as an object literal and restated a
+ * second time in the consumer's schema, with nothing checking the two agreed.
+ * Exported so the contract test can drive the real serialisation rather than a
+ * re-implementation of it.
+ */
+export function toIntegrationMessage(row: OutboxRow): {
+  key: string;
+  value: string;
+  headers?: Record<string, string>;
+} {
+  return {
+    // Keying by aggregate keeps every event for one withdrawal on a single
+    // partition, so redelivery cannot reorder its lifecycle.
+    key: row.aggregate_id,
+    value: JSON.stringify(
+      encodeIntegrationEvent({
+        id: row.id,
+        type: row.event_type,
+        occurredAt: row.occurred_at,
+        payload: row.payload,
+      }),
+    ),
+    // A header, not a payload field: the correlation id is transport metadata
+    // that no consumer is required to understand, and putting it in the payload
+    // would make it part of the versioned contract.
+    ...(row.correlation_id
+      ? { headers: { [CORRELATION_ID_HEADER]: row.correlation_id } }
+      : {}),
+  };
+}
+
+/**
+ * Relays committed outbox rows to Kafka.
+ *
+ * Rows are leased with `FOR UPDATE SKIP LOCKED` so multiple replicas can run
+ * concurrently. Publication is marked *after* the broker acknowledges, which is
+ * why a crash in that window republishes: at-least-once by construction, which
+ * the consumer's deduplication is designed to absorb.
+ */
+export class OutboxPublisher {
+  private readonly logger = new Logger(OutboxPublisher.name);
+  private readonly options: OutboxPublisherOptions;
+  private readonly publisherId = randomUUID();
+  private timer?: NodeJS.Timeout;
+  private lastPrunedAt = 0;
+
+  constructor(
+    private readonly pool: Pool,
+    private readonly producer: Producer,
+    private readonly topic: string,
+    options: Partial<OutboxPublisherOptions> = {},
+  ) {
+    this.options = { ...DEFAULT_OPTIONS, ...options };
+  }
+
+  async start(): Promise<void> {
+    if (this.timer) {
+      // A second start() would orphan the first interval with no handle to
+      // clear it, leaving a timer polling the outbox until the process dies.
+      return;
+    }
+    await this.producer.connect();
+    this.timer = setInterval(() => void this.tick(), this.options.intervalMs);
+    this.timer.unref();
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer) {
+      clearInterval(this.timer);
+      // Cleared *and* forgotten, so stop()/start()/stop() stays balanced.
+      this.timer = undefined;
+    }
+    await this.producer.disconnect();
+  }
+
+  /**
+   * The only thing the interval calls, and the reason it exists.
+   *
+   * `setInterval(() => void this.publishOnce(), …)` discards the promise, so any
+   * rejection inside `publishOnce` — a pool error from `claimBatch`, a failed
+   * bookkeeping UPDATE in the catch path, a prune against a closed pool — became
+   * an unhandled rejection and, under Node's default `--unhandled-rejections=throw`,
+   * killed the API. A transient database blip is not a reason to lose the
+   * process, and the next tick is one second away.
+   */
+  private async tick(): Promise<void> {
+    try {
+      await this.publishOnce();
+    } catch (error) {
+      this.logger.error({
+        operation: 'publish-outbox',
+        result: 'tick-failed',
+        errorCode: errorCode(error),
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  async publishOnce(): Promise<number> {
+    const rows = await this.claimBatch();
+    for (const row of rows) {
+      try {
+        await this.producer.send({
+          topic: this.topic,
+          messages: [toIntegrationMessage(row)],
+        });
+        await this.pool.query(
+          `UPDATE outbox_events
+           SET published_at = now(), locked_until = NULL, locked_by = NULL
+           WHERE id = $1 AND locked_by = $2`,
+          [row.id, this.publisherId],
+        );
+        this.logger.log({
+          // Read from the row, not from an async context: the publisher runs on
+          // a timer and belongs to no request. This is the middle link that
+          // makes the chain from HTTP request to settlement traceable.
+          correlationId: row.correlation_id ?? undefined,
+          eventId: row.id,
+          withdrawalId: row.aggregate_id,
+          operation: 'publish-outbox',
+          result: 'published',
+        });
+      } catch (error) {
+        await this.pool.query(
+          `UPDATE outbox_events
+           SET attempts = attempts + 1,
+               available_at = now() + (LEAST(attempts + 1, 30) * interval '1 second'),
+               locked_until = NULL, locked_by = NULL
+           WHERE id = $1 AND locked_by = $2`,
+          [row.id, this.publisherId],
+        );
+        this.logger.warn({
+          correlationId: row.correlation_id ?? undefined,
+          eventId: row.id,
+          withdrawalId: row.aggregate_id,
+          operation: 'publish-outbox',
+          result: 'retry-scheduled',
+          errorCode: errorCode(error),
+          message: errorMessage(error),
+        });
+      }
+    }
+    await this.pruneIfDue();
+    return rows.length;
+  }
+
+  /**
+   * Published rows are kept for a while as an audit trail, then removed. Without
+   * this the table grows without bound and the partial index over unpublished
+   * rows slowly loses its advantage.
+   */
+  async pruneIfDue(now = Date.now()): Promise<number> {
+    if (now - this.lastPrunedAt < this.options.pruneIntervalMs) {
+      return 0;
+    }
+    this.lastPrunedAt = now;
+    const cutoff = new Date(now - this.options.retentionMs);
+    const result = await this.pool.query(
+      'DELETE FROM outbox_events WHERE published_at IS NOT NULL AND published_at < $1',
+      [cutoff],
+    );
+    const removed = result.rowCount ?? 0;
+    if (removed > 0) {
+      this.logger.log({
+        operation: 'prune-outbox',
+        result: 'pruned',
+        removed,
+      });
+    }
+    return removed;
+  }
+
+  private async claimBatch(): Promise<OutboxRow[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await this.claim(client);
+      await client.query('COMMIT');
+      return result.rows;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private claim(client: PoolClient) {
+    return client.query<OutboxRow>(
+      `UPDATE outbox_events
+       SET locked_by = $1, locked_until = now() + ($3 * interval '1 second')
+       WHERE id IN (
+         SELECT id FROM outbox_events
+         WHERE published_at IS NULL
+           AND available_at <= now()
+           AND (locked_until IS NULL OR locked_until < now())
+         ORDER BY occurred_at
+         FOR UPDATE SKIP LOCKED
+         LIMIT $2
+       )
+       RETURNING id, event_type, aggregate_id, payload, occurred_at, correlation_id`,
+      [this.publisherId, this.options.batchSize, this.options.leaseSeconds],
+    );
+  }
+}

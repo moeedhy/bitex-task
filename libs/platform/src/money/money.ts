@@ -7,8 +7,7 @@ import {
 
 type Comparison = -1 | 0 | 1;
 
-const DECIMAL_PATTERN =
-  /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
+const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 
 export class Money {
   private constructor(
@@ -22,10 +21,7 @@ export class Money {
     return new Money(0n, asset);
   }
 
-  static fromAtomicUnits(
-    atomicUnits: bigint,
-    asset: Asset,
-  ): Money {
+  static fromAtomicUnits(atomicUnits: bigint, asset: Asset): Money {
     if (typeof atomicUnits !== 'bigint') {
       throw new InvalidMoneyAmountError();
     }
@@ -44,56 +40,45 @@ export class Money {
       throw new InvalidMoneyAmountError();
     }
 
-    const [, signToken, wholePart, fraction = ''] =
-      match;
+    const [, signToken, wholePart, fraction = ''] = match;
+
+    if (wholePart === undefined) {
+      throw new InvalidMoneyAmountError();
+    }
 
     if (fraction.length > asset.decimals) {
-      throw new MoneyPrecisionExceededError(
-        asset.code,
-        asset.decimals,
-      );
+      throw new MoneyPrecisionExceededError(asset.code, asset.decimals);
     }
 
     const scale = Money.scaleFor(asset);
 
     const fractionAtomicUnits =
-      fraction.length === 0
-        ? 0n
-        : BigInt(
-          fraction.padEnd(asset.decimals, '0'),
-        );
+      fraction.length === 0 ? 0n : BigInt(fraction.padEnd(asset.decimals, '0'));
 
-    const absoluteAtomicUnits =
-      BigInt(wholePart) * scale +
-      fractionAtomicUnits;
+    const absoluteAtomicUnits = BigInt(wholePart) * scale + fractionAtomicUnits;
 
     const sign = signToken === '-' ? -1n : 1n;
 
-    return new Money(
-      absoluteAtomicUnits * sign,
-      asset,
-    );
+    return new Money(absoluteAtomicUnits * sign, asset);
   }
 
   add(other: Money): Money {
     this.assertCompatibleAsset(other);
 
-    return new Money(
-      this.atomicUnits + other.atomicUnits,
-      this.asset,
-    );
+    return new Money(this.atomicUnits + other.atomicUnits, this.asset);
   }
 
   subtract(other: Money): Money {
     this.assertCompatibleAsset(other);
 
-    return new Money(
-      this.atomicUnits - other.atomicUnits,
-      this.asset,
-    );
+    return new Money(this.atomicUnits - other.atomicUnits, this.asset);
   }
 
-  compare(other: Money): Comparison {
+  /**
+   * Private because nothing outside needed a three-way result. The public
+   * surface is the two predicates the domain actually asks for.
+   */
+  private compare(other: Money): Comparison {
     this.assertCompatibleAsset(other);
 
     if (this.atomicUnits < other.atomicUnits) {
@@ -109,13 +94,8 @@ export class Money {
 
   equals(other: Money): boolean {
     return (
-      this.asset.equals(other.asset) &&
-      this.atomicUnits === other.atomicUnits
+      this.asset.equals(other.asset) && this.atomicUnits === other.atomicUnits
     );
-  }
-
-  isZero(): boolean {
-    return this.atomicUnits === 0n;
   }
 
   isPositive(): boolean {
@@ -126,20 +106,8 @@ export class Money {
     return this.atomicUnits < 0n;
   }
 
-  isLessThan(other: Money): boolean {
-    return this.compare(other) < 0;
-  }
-
-  isLessThanOrEqual(other: Money): boolean {
-    return this.compare(other) <= 0;
-  }
-
   isGreaterThan(other: Money): boolean {
     return this.compare(other) > 0;
-  }
-
-  isGreaterThanOrEqual(other: Money): boolean {
-    return this.compare(other) >= 0;
   }
 
   toAtomicUnits(): bigint {
@@ -153,17 +121,13 @@ export class Money {
 
     const negative = this.atomicUnits < 0n;
 
-    const absoluteAtomicUnits = negative
-      ? -this.atomicUnits
-      : this.atomicUnits;
+    const absoluteAtomicUnits = negative ? -this.atomicUnits : this.atomicUnits;
 
     const scale = Money.scaleFor(this.asset);
 
-    const wholePart =
-      absoluteAtomicUnits / scale;
+    const wholePart = absoluteAtomicUnits / scale;
 
-    const remainder =
-      absoluteAtomicUnits % scale;
+    const remainder = absoluteAtomicUnits % scale;
 
     const sign = negative ? '-' : '';
 
