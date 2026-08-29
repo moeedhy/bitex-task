@@ -1,10 +1,6 @@
 import { Module } from '@nestjs/common';
 import { uuidV7Generator } from '@bitex/platform';
-import {
-  FinalizeReservation,
-  ReleaseReservation,
-  ReserveFunds,
-} from '@bitex/wallet';
+import { ReserveFunds, SettleReservation } from '@bitex/wallet';
 import {
   ExecuteWithdrawal,
   GetWithdrawal,
@@ -100,11 +96,9 @@ const eventIds = uuidV7Generator<'EventId'>();
     },
     {
       provide: WalletSettlementAdapter,
-      inject: [FinalizeReservation, ReleaseReservation],
-      useFactory: (
-        finalize: FinalizeReservation,
-        release: ReleaseReservation,
-      ) => new WalletSettlementAdapter(finalize, release),
+      inject: [SettleReservation],
+      useFactory: (settle: SettleReservation) =>
+        new WalletSettlementAdapter(settle),
     },
     {
       provide: RequestWithdrawal,

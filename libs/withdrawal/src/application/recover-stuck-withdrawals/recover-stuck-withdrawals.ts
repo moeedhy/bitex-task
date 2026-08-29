@@ -1,30 +1,16 @@
+import { resolveAsset, Money } from '@bitex/platform';
 import type {
   Clock,
   IdGenerator,
   Outbox,
   TransactionRunner,
-  UserId,
   WithdrawalId,
 } from '@bitex/platform';
-
-/**
- * The immutable facts needed to re-drive execution. Deliberately a read model
- * rather than the aggregate: recovery re-publishes an intent, it does not
- * mutate the Withdrawal.
- */
-export interface StuckWithdrawal {
-  withdrawalId: WithdrawalId;
-  userId: UserId;
-  asset: string;
-  amount: string;
-}
-
-export interface StuckWithdrawalQueryPort {
-  findProcessingSince(input: {
-    threshold: Date;
-    limit: number;
-  }): Promise<StuckWithdrawal[]>;
-}
+import { withdrawalExecutionRequested } from '../../contracts/withdrawal-execution-requested.js';
+import type {
+  StuckWithdrawal,
+  StuckWithdrawalQueryPort,
+} from '../ports/stuck-withdrawal-query.port.js';
 
 export interface RecoverStuckWithdrawalsDependencies {
   transactionRunner: TransactionRunner;
@@ -72,21 +58,38 @@ export class RecoverStuckWithdrawals {
       );
 
       for (const withdrawal of stuck) {
-        await this.dependencies.outbox.append({
-          id: this.dependencies.eventIdGenerator.next(),
-          type: 'WithdrawalExecutionRequested',
-          aggregateId: withdrawal.withdrawalId,
-          occurredAt: now,
-          payload: {
-            withdrawalId: withdrawal.withdrawalId,
-            userId: withdrawal.userId,
-            asset: withdrawal.asset,
-            amount: withdrawal.amount,
-          },
-        });
+        await this.dependencies.outbox.append(
+          withdrawalExecutionRequested(
+            toRequestedEvent(withdrawal, now),
+            this.dependencies.eventIdGenerator.next(),
+          ),
+        );
       }
 
       return { rescheduled: stuck.map((item) => item.withdrawalId) };
     });
   }
+}
+
+/**
+ * Recovery works from a read model, not from the aggregate, so it rebuilds the
+ * one domain event the contract is derived from.
+ *
+ * The alternative — a second hand-written payload — is exactly what this phase
+ * removed: the two build sites drifted silently because only one of them was
+ * covered by the contract test.
+ */
+function toRequestedEvent(
+  withdrawal: StuckWithdrawal,
+  occurredAt: Date,
+): Parameters<typeof withdrawalExecutionRequested>[0] {
+  const asset = resolveAsset(withdrawal.asset);
+  return {
+    type: 'WithdrawalExecutionRequested',
+    withdrawalId: withdrawal.withdrawalId,
+    userId: withdrawal.userId,
+    asset,
+    amount: Money.parse(withdrawal.amount, asset),
+    occurredAt,
+  };
 }

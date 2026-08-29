@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { encodeIntegrationEvent } from '@bitex/platform';
 import { Logger } from '@nestjs/common';
 import type { Producer } from 'kafkajs';
 import type { Pool, PoolClient } from 'pg';
@@ -31,8 +32,13 @@ const DEFAULT_OPTIONS: OutboxPublisherOptions = {
 };
 
 /**
- * The wire envelope. Exported so the producer/consumer contract can be tested
- * against the real serialisation rather than a re-implementation of it.
+ * Turns a committed outbox row back into a Kafka message.
+ *
+ * The envelope shape is `encodeIntegrationEvent`'s, not this file's: the
+ * flattening used to be written out here as an object literal and restated a
+ * second time in the consumer's schema, with nothing checking the two agreed.
+ * Exported so the contract test can drive the real serialisation rather than a
+ * re-implementation of it.
  */
 export function toIntegrationMessage(row: OutboxRow): {
   key: string;
@@ -42,12 +48,14 @@ export function toIntegrationMessage(row: OutboxRow): {
     // Keying by aggregate keeps every event for one withdrawal on a single
     // partition, so redelivery cannot reorder its lifecycle.
     key: row.aggregate_id,
-    value: JSON.stringify({
-      eventId: row.id,
-      eventType: row.event_type,
-      occurredAt: row.occurred_at.toISOString(),
-      ...row.payload,
-    }),
+    value: JSON.stringify(
+      encodeIntegrationEvent({
+        id: row.id,
+        type: row.event_type,
+        occurredAt: row.occurred_at,
+        payload: row.payload,
+      }),
+    ),
   };
 }
 

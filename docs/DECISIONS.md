@@ -260,3 +260,99 @@ that made time untestable and let a caller silently bypass the injected `Clock`.
 validate-then-swap discipline. Both mutated `this.state` in place, so a
 transition rejected by a later assertion left the aggregate half-changed — a
 status advanced with no provider reference behind it.
+
+## 35. The integration event contract is owned by its producer
+
+`libs/withdrawal/src/contracts/withdrawal-execution-requested.ts` is the single
+definition of `WithdrawalExecutionRequested`. `RequestWithdrawal` and
+`RecoverStuckWithdrawals` both build through it, the Kafka consumer parses
+through it, and the outbox publisher serialises through the platform encoder it
+shares.
+
+Previously the same event existed in three places in two shapes: hand-built in
+`RequestWithdrawal`, hand-built again in `RecoverStuckWithdrawals` with no test
+covering that path, and restated a third time as the consumer's zod schema.
+Nothing checked that any of them agreed.
+
+The integration event is derived from the aggregate's own domain event, so the
+published fact and the recorded one cannot diverge. Recovery works from a read
+model rather than an aggregate, so it rebuilds that domain event first — which
+is deliberately more work than writing a second payload, because writing a
+second payload is what drifted.
+
+**`z.object`, not `z.strictObject`.** A producer that begins sending an extra
+field is a routine additive change. Under strict parsing it dead-letters 100% of
+traffic on every consumer not yet redeployed, which makes deployment order
+load-bearing for the entire withdrawal pipeline. Unknown fields are ignored.
+
+**`schemaVersion` carries the breaking change instead.** It defaults to 1 when
+absent, so messages produced before versioning are read rather than stranded
+during a rolling deploy; a version this consumer does not understand fails the
+literal and is dead-lettered rather than half-read.
+
+**Amounts cross the wire as decimal strings.** `100.000001` USDT does not
+survive an IEEE-754 double, and the atomic-unit scale is the receiver's to
+decide from the asset.
+
+## 36. Ports live in `application/ports/`, narrow enough to need no unused stubs
+
+Every port is one file under `application/ports/`, suffixed by role. None is
+declared inside a use-case file any more.
+
+`WithdrawalRepository` is split into `WithdrawalAppender` (`add`) and
+`WithdrawalMutator` (`getForUpdate`, `save`), both derived from it with `Pick`
+so one signature change reaches every view. The adapter implements the whole
+thing; each use case depends only on what it calls.
+
+The measurable effect is that no test double contains
+`throw new Error('not used')` any more — there were three. A fake forced to
+implement methods its subject never calls has stopped describing the
+dependency, and the compiler now rejects them.
+
+The `CLAIMED` / `REPLAY` / `CONFLICT` concurrency semantics moved onto the
+idempotency port. They were documented in the PostgreSQL adapter, which meant
+the contract every implementation must honour was written down as a property of
+one implementation.
+
+## 37. `SettleReservation` replaces two identical use cases
+
+`FinalizeReservation` and `ReleaseReservation` were the same seven lines twice:
+same collaborators, same lock order, same shape, differing only in which pair of
+aggregate methods they called. The composition root then immediately re-fused
+them behind one adapter, so the split bought nothing and cost a reader two files
+to see one rule.
+
+One use case takes a `'FINALIZE' | 'RELEASE'` outcome and switches on it with
+`assertNever`. Naming the outcome keeps the pair visible: every reservation must
+eventually receive exactly one of them.
+
+`libs/wallet` now has the same folder-per-slice shape as `libs/withdrawal`, and
+its specs are per slice. The settlement spec builds the reserved state directly
+instead of running `ReserveFunds` first, so it fails for its own reasons.
+
+## 38. Application errors stay at the application level, not in each slice
+
+`IdempotencyKeyConflictError` is raised only by `RequestWithdrawal`, and
+`WithdrawalExecutionUnresolvedError` only by `ExecuteWithdrawal`, so both could
+move into their slices. They did not.
+
+`WithdrawalNotFoundError` is genuinely shared, and the other two are part of
+contracts that are shared: a key conflict is what the idempotency port promises
+for a fingerprint mismatch, and an unresolved execution is the one retryable
+failure the Kafka consumer keys its behaviour on. Three small classes in one
+clearly named file is less to hold in mind than three files, and it keeps the
+`WithdrawalApplicationErrorCode` union in one place.
+
+Domain errors do live with their aggregates, because those are rules rather than
+protocol.
+
+## 39. Barrels export explicit names, never `*`
+
+A star export publishes whatever a file happens to declare. That is how both
+wallet repository interfaces, every `*Snapshot`, every `*Dependencies` bag —
+and `createRequestFingerprint` — became part of a module's public contract
+without anyone deciding they should be.
+
+The fingerprint is the clearest case: §14 of this document argues that the
+fingerprinting policy must not be reproducible outside the workflow that owns
+it, and the barrel published it anyway.

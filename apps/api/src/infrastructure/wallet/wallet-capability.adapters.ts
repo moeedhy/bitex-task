@@ -1,9 +1,5 @@
 import type { ReservationId } from '@bitex/platform';
-import type {
-  FinalizeReservation,
-  ReleaseReservation,
-  ReserveFunds,
-} from '@bitex/wallet';
+import type { ReserveFunds, SettleReservation } from '@bitex/wallet';
 import type {
   WalletReservationPort,
   WalletSettlementPort,
@@ -17,9 +13,9 @@ import type {
  * library imports the other — Withdrawal never sees a wallet aggregate or
  * repository, and Wallet never learns that withdrawals exist.
  *
- * Both adapters are transaction participants: they are invoked inside a
- * transaction the caller already opened, and the wallet repositories fail fast
- * if that is not true.
+ * Both are transaction participants: they are invoked inside a transaction the
+ * caller already opened, and the wallet repositories fail fast if that is not
+ * true.
  */
 export class WalletReservationAdapter implements WalletReservationPort {
   constructor(private readonly reserveFunds: ReserveFunds) {}
@@ -29,17 +25,27 @@ export class WalletReservationAdapter implements WalletReservationPort {
   }
 }
 
+/**
+ * Translates Withdrawal's two-method vocabulary onto Wallet's one use case.
+ *
+ * This used to fan two Wallet classes into one port, which is why those classes
+ * existed separately at all. Now the translation is the whole adapter: the port
+ * names *what* happens to the funds, the command names it in Wallet's terms.
+ */
 export class WalletSettlementAdapter implements WalletSettlementPort {
-  constructor(
-    private readonly finalizeReservation: FinalizeReservation,
-    private readonly releaseReservation: ReleaseReservation,
-  ) {}
+  constructor(private readonly settleReservation: SettleReservation) {}
 
   finalize(reservationId: ReservationId): Promise<void> {
-    return this.finalizeReservation.execute(reservationId);
+    return this.settleReservation.execute({
+      reservationId,
+      outcome: 'FINALIZE',
+    });
   }
 
   release(reservationId: ReservationId): Promise<void> {
-    return this.releaseReservation.execute(reservationId);
+    return this.settleReservation.execute({
+      reservationId,
+      outcome: 'RELEASE',
+    });
   }
 }

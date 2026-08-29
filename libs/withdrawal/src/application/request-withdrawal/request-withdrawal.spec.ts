@@ -1,11 +1,9 @@
 import { Assets, Money } from '@bitex/platform';
 import { IdempotencyKeyConflictError } from '../withdrawal.errors.js';
 import { RequestWithdrawal } from './request-withdrawal.js';
-import type {
-  IdempotencyClaim,
-  RequestWithdrawalDependencies,
-  RequestWithdrawalResult,
-} from './request-withdrawal.js';
+import type { RequestWithdrawalDependencies } from './request-withdrawal.js';
+import type { RequestWithdrawalResult } from './request-withdrawal.contract.js';
+import type { IdempotencyClaim } from '../ports/withdrawal-idempotency.port.js';
 import { EventId, ReservationId, UserId, WithdrawalId } from '@bitex/platform';
 
 // Fixed identities. Parsed rather than cast, so the fixtures are
@@ -70,12 +68,6 @@ describe('RequestWithdrawal', () => {
       withdrawals: {
         async add(withdrawal) {
           withdrawals.push(withdrawal);
-        },
-        async getForUpdate() {
-          throw new Error('not used');
-        },
-        async save() {
-          return;
         },
       },
       outbox: {

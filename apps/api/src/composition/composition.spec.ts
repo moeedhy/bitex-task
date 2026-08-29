@@ -7,8 +7,7 @@ import {
   RequestWithdrawal,
 } from '@bitex/withdrawal';
 import {
-  FinalizeReservation,
-  ReleaseReservation,
+  SettleReservation,
   ReserveFunds,
 } from '@bitex/wallet';
 import { AppModule } from '../app/app.module.js';
@@ -37,8 +36,7 @@ describe('application composition', () => {
     ['GetWithdrawal', GetWithdrawal],
     ['RecoverStuckWithdrawals', RecoverStuckWithdrawals],
     ['ReserveFunds', ReserveFunds],
-    ['FinalizeReservation', FinalizeReservation],
-    ['ReleaseReservation', ReleaseReservation],
+    ['SettleReservation', SettleReservation],
   ])('resolves %s from the container', (_name, token) => {
     expect(moduleRef.get(token)).toBeInstanceOf(token);
   });

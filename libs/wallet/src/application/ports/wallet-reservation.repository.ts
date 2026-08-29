@@ -1,5 +1,5 @@
 import type { ReservationId } from '@bitex/platform';
-import type { WalletReservation } from '../domain/wallet-reservation.js';
+import type { WalletReservation } from '../../domain/wallet-reservation.js';
 
 export interface WalletReservationRepository {
   add(reservation: WalletReservation): Promise<void>;

@@ -1,5 +1,5 @@
 import { WithdrawalAddress } from '../../domain/withdrawal-address.js';
-import type { RequestWithdrawalCommand } from './request-withdrawal.js';
+import type { RequestWithdrawalCommand } from './request-withdrawal.contract.js';
 
 /**
  * Canonical representation of everything that makes two withdrawal requests

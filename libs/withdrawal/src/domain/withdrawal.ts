@@ -53,8 +53,25 @@ export class Withdrawal {
     this.state = Withdrawal.copy(state);
   }
 
-  static request(input: RequestWithdrawalInput): Withdrawal {
+  /**
+   * The rules a request must satisfy, checked without building anything.
+   *
+   * Exposed separately so a caller can reject a bad request *before* holding a
+   * customer's funds. Without it the workflow had to reserve first and
+   * construct second, which meant a non-positive amount surfaced as
+   * `INVALID_WALLET_AMOUNT` from the wallet module — a module the caller never
+   * addressed — instead of as a withdrawal rule.
+   */
+  static assertRequestable(input: {
+    amount: Money;
+    destinationAddress: string;
+  }): void {
     Withdrawal.assertAmount(input.amount);
+    WithdrawalAddress.create(input.destinationAddress);
+  }
+
+  static request(input: RequestWithdrawalInput): Withdrawal {
+    Withdrawal.assertRequestable(input);
 
     const withdrawal = new Withdrawal({
       ...input,

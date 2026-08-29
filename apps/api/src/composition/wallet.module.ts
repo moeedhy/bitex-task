@@ -1,18 +1,14 @@
 import { Module } from '@nestjs/common';
 import { uuidV7Generator } from '@bitex/platform';
-import {
-  FinalizeReservation,
-  ReleaseReservation,
-  ReserveFunds,
-} from '@bitex/wallet';
+import { ReserveFunds, SettleReservation } from '@bitex/wallet';
 import { PostgresWalletRepository } from '../infrastructure/wallet/postgres-wallet-repository.js';
 import { PostgresWalletReservationRepository } from '../infrastructure/wallet/postgres-wallet-reservation-repository.js';
 import { PostgresTransactionRunner } from '../infrastructure/shared/postgres-transaction-runner.js';
 import { PersistenceModule } from './persistence.module.js';
 
 /**
- * The Wallet bounded context: its aggregates' repositories and the three
- * balance operations built on them.
+ * The Wallet bounded context: its aggregates' repositories and the two use
+ * cases built on them.
  *
  * It exports only use cases. Repositories stay private, so no other module can
  * reach a wallet aggregate directly — the boundary Withdrawal must respect is
@@ -47,22 +43,14 @@ import { PersistenceModule } from './persistence.module.js';
         ),
     },
     {
-      provide: FinalizeReservation,
+      provide: SettleReservation,
       inject: [PostgresWalletRepository, PostgresWalletReservationRepository],
       useFactory: (
         wallets: PostgresWalletRepository,
         reservations: PostgresWalletReservationRepository,
-      ) => new FinalizeReservation(wallets, reservations),
-    },
-    {
-      provide: ReleaseReservation,
-      inject: [PostgresWalletRepository, PostgresWalletReservationRepository],
-      useFactory: (
-        wallets: PostgresWalletRepository,
-        reservations: PostgresWalletReservationRepository,
-      ) => new ReleaseReservation(wallets, reservations),
+      ) => new SettleReservation(wallets, reservations),
     },
   ],
-  exports: [ReserveFunds, FinalizeReservation, ReleaseReservation],
+  exports: [ReserveFunds, SettleReservation],
 })
 export class WalletModule {}

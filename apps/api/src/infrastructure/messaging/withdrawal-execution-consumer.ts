@@ -1,18 +1,8 @@
 import { errorCode, EventId, isRetryable, WithdrawalId } from '@bitex/platform';
+import { parseWithdrawalExecutionRequested } from '@bitex/withdrawal';
 import type { ExecuteWithdrawal } from '@bitex/withdrawal';
 import { Logger } from '@nestjs/common';
 import type { Consumer } from 'kafkajs';
-import { z } from 'zod';
-
-const EventSchema = z.strictObject({
-  eventId: z.string().min(1),
-  eventType: z.literal('WithdrawalExecutionRequested'),
-  withdrawalId: z.string().min(1),
-  userId: z.string().min(1),
-  asset: z.string().min(1),
-  amount: z.string().min(1),
-  occurredAt: z.string().datetime(),
-});
 
 /*
  * Whether a failure is worth retrying is answered by `isRetryable`, which asks
@@ -91,26 +81,21 @@ export class WithdrawalExecutionConsumer {
   }
 
   async handle(key: string | undefined, value: string): Promise<void> {
-    const parsed = EventSchema.safeParse(this.parse(value));
+    // Parsed through the producer's own contract, so the two cannot drift.
+    const parsed = parseWithdrawalExecutionRequested(this.parse(value));
     if (!parsed.success) {
       await this.deadLetter(key, value, 'UNPARSEABLE_MESSAGE', parsed.error);
       return;
     }
     const event = parsed.data;
 
-    // Identities are parsed before the retry loop, not inside it: a message
-    // carrying a malformed id is unparseable, and calling it a failed attempt
-    // would spend the whole backoff budget re-deciding that.
-    let command;
-    try {
-      command = {
-        eventId: EventId.parse(event.eventId),
-        withdrawalId: WithdrawalId.parse(event.withdrawalId),
-      };
-    } catch (error) {
-      await this.deadLetter(key, value, 'UNPARSEABLE_MESSAGE', error);
-      return;
-    }
+    // Cannot throw: the contract's schema has already established that both
+    // fields are UUIDs, so a malformed identity was dead-lettered above rather
+    // than spending a retry attempt here. This call only applies the brand.
+    const command = {
+      eventId: EventId.parse(event.eventId),
+      withdrawalId: WithdrawalId.parse(event.withdrawalId),
+    };
 
     for (let attempt = 1; attempt <= this.options.maxAttempts; attempt += 1) {
       try {

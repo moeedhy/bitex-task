@@ -1,43 +1,25 @@
 import { assertNever } from '@bitex/platform';
-import type {
-  Clock,
-  EventId,
-  ReservationId,
-  TransactionRunner,
-  WithdrawalId,
-} from '@bitex/platform';
+import type { Clock, TransactionRunner } from '@bitex/platform';
 import { WithdrawalExecutionUnresolvedError } from '../withdrawal.errors.js';
 import type { Withdrawal } from '../../domain/withdrawal.js';
 import type { WithdrawalDomainEvent } from '../../domain/withdrawal.events.js';
-import type { WithdrawalRepository } from '../ports/withdrawal.repository.js';
+import type { WithdrawalMutator } from '../ports/withdrawal.repository.js';
+import type { ExecuteWithdrawalCommand } from './execute-withdrawal.contract.js';
+import type { ProcessedEventPort } from '../ports/processed-event.port.js';
+import type { WalletSettlementPort } from '../ports/wallet-settlement.port.js';
 import type {
   ExecutionRequest,
   ExecutionResult,
   WithdrawalProvider,
-} from './withdrawal.provider.js';
-
-export interface ProcessedEventPort {
-  has(eventId: EventId): Promise<boolean>;
-  record(eventId: EventId): Promise<void>;
-}
-
-export interface WalletSettlementPort {
-  finalize(reservationId: ReservationId): Promise<void>;
-  release(reservationId: ReservationId): Promise<void>;
-}
+} from '../ports/withdrawal-provider.port.js';
 
 export interface ExecuteWithdrawalDependencies {
   transactionRunner: TransactionRunner;
-  withdrawals: WithdrawalRepository;
+  withdrawals: WithdrawalMutator;
   processedEvents: ProcessedEventPort;
   walletSettlement: WalletSettlementPort;
   provider: WithdrawalProvider;
   clock: Clock;
-}
-
-export interface ExecuteWithdrawalCommand {
-  eventId: EventId;
-  withdrawalId: WithdrawalId;
 }
 
 export class ExecuteWithdrawal {

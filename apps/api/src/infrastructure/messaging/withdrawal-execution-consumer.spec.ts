@@ -16,6 +16,7 @@ describe('WithdrawalExecutionConsumer', () => {
   const event = {
     eventId: EVENT_ID,
     eventType: 'WithdrawalExecutionRequested',
+    schemaVersion: 1,
     withdrawalId: WITHDRAWAL_ID,
     userId: USER_ID,
     asset: 'USDT',
@@ -147,6 +148,53 @@ describe('WithdrawalExecutionConsumer', () => {
 
     expect(harness.execute).not.toHaveBeenCalled();
     expect(harness.deadLettered[0]?.reason).toBe('UNPARSEABLE_MESSAGE');
-    expect(harness.deadLettered[0]?.error).toBe('INVALID_IDENTITY');
+  });
+
+  /**
+   * The reason the contract's schema is `z.object` and not `z.strictObject`.
+   * An additive producer change is routine; under strict parsing it
+   * dead-letters 100% of traffic on every consumer not yet redeployed, which
+   * makes deployment order load-bearing for the whole withdrawal pipeline.
+   */
+  it('tolerates a field a newer producer added', async () => {
+    const harness = createHarness(jest.fn().mockResolvedValue(undefined));
+
+    await harness.consumer.handle(
+      WITHDRAWAL_ID,
+      JSON.stringify({ ...event, feeAmount: '0.5' }),
+    );
+
+    expect(harness.execute).toHaveBeenCalledTimes(1);
+    expect(harness.deadLettered).toEqual([]);
+  });
+
+  /**
+   * The inverse: a version this consumer cannot understand is refused rather
+   * than half-read. That is what carrying schemaVersion buys.
+   */
+  it('dead-letters a schema version it does not understand', async () => {
+    const harness = createHarness(jest.fn());
+
+    await harness.consumer.handle(
+      WITHDRAWAL_ID,
+      JSON.stringify({ ...event, schemaVersion: 2 }),
+    );
+
+    expect(harness.execute).not.toHaveBeenCalled();
+    expect(harness.deadLettered[0]?.reason).toBe('UNPARSEABLE_MESSAGE');
+  });
+
+  /**
+   * Messages produced before versioning existed carry no schemaVersion and are
+   * v1 by definition, so a rolling deploy does not strand the backlog.
+   */
+  it('reads an unversioned message as version 1', async () => {
+    const harness = createHarness(jest.fn().mockResolvedValue(undefined));
+    const unversioned = { ...event, schemaVersion: undefined };
+
+    await harness.consumer.handle(WITHDRAWAL_ID, JSON.stringify(unversioned));
+
+    expect(harness.execute).toHaveBeenCalledTimes(1);
+    expect(harness.deadLettered).toEqual([]);
   });
 });

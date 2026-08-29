@@ -2,10 +2,9 @@ import { join } from 'node:path';
 import { Pool } from 'pg';
 import { Assets, Money } from '@bitex/platform';
 import {
-  FinalizeReservation,
   InsufficientAvailableBalanceError,
-  ReleaseReservation,
   ReserveFunds,
+  SettleReservation,
   WalletAccount,
 } from '@bitex/wallet';
 import {
@@ -17,6 +16,10 @@ import {
 import { PostgresTransactionRunner } from '../shared/postgres-transaction-runner.js';
 import { SchemaMigrator } from '../shared/schema-migrator.js';
 import { PostgresWalletRepository } from '../wallet/postgres-wallet-repository.js';
+import {
+  WalletReservationAdapter,
+  WalletSettlementAdapter,
+} from '../wallet/wallet-capability.adapters.js';
 import { PostgresWalletReservationRepository } from '../wallet/postgres-wallet-reservation-repository.js';
 import { PostgresWithdrawalRepository } from './postgres-withdrawal-repository.js';
 import { PostgresWithdrawalIdempotency } from './postgres-idempotency.js';
@@ -78,12 +81,13 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
     useCase = new RequestWithdrawal({
       transactionRunner: transaction,
       idempotency: new PostgresWithdrawalIdempotency(transaction),
-      walletReservation: {
-        reserve: (input) =>
-          new ReserveFunds(walletRepository, walletReservationRepository, {
-            next: uuidV7Generator<'ReservationId'>().next,
-          }).execute(input),
-      },
+      walletReservation: new WalletReservationAdapter(
+        new ReserveFunds(
+          walletRepository,
+          walletReservationRepository,
+          uuidV7Generator<'ReservationId'>(),
+        ),
+      ),
       withdrawals: withdrawalRepository,
       outbox: new PostgresOutbox(transaction),
       withdrawalIdGenerator: uuidV7Generator<'WithdrawalId'>(),
@@ -323,22 +327,16 @@ describePostgres('PostgreSQL withdrawal transaction', () => {
   }
 
   function executionUseCase(shouldFail: boolean): ExecuteWithdrawal {
-    const finalize = new FinalizeReservation(
-      walletRepository,
-      walletReservationRepository,
-    );
-    const release = new ReleaseReservation(
-      walletRepository,
-      walletReservationRepository,
-    );
     return new ExecuteWithdrawal({
       transactionRunner: transaction,
       withdrawals: withdrawalRepository,
       processedEvents: new PostgresProcessedEvents(transaction),
-      walletSettlement: {
-        finalize: (reservationId) => finalize.execute(reservationId),
-        release: (reservationId) => release.execute(reservationId),
-      },
+      // The real adapter, not a re-implementation of it. A hand-written stand-in
+      // here would keep passing while the wiring the application actually uses
+      // was broken.
+      walletSettlement: new WalletSettlementAdapter(
+        new SettleReservation(walletRepository, walletReservationRepository),
+      ),
       provider: new PostgresFakeWithdrawalProvider(
         pool,
         () => shouldFail,

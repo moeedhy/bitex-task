@@ -42,9 +42,6 @@ describe('ExecuteWithdrawal', () => {
         },
       },
       withdrawals: {
-        async add() {
-          return;
-        },
         async getForUpdate() {
           return withdrawal;
         },

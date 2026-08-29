@@ -45,12 +45,6 @@ describe('WithdrawalExecutionRequested contract', () => {
         async add() {
           return;
         },
-        async getForUpdate() {
-          throw new Error('not used');
-        },
-        async save() {
-          return;
-        },
       },
       outbox: {
         async append(event) {
@@ -114,9 +108,12 @@ describe('WithdrawalExecutionRequested contract', () => {
     expect(JSON.parse(toIntegrationMessage(asOutboxRow(event)).value)).toEqual({
       eventId: EVENT_ID,
       eventType: 'WithdrawalExecutionRequested',
+      schemaVersion: 1,
       withdrawalId: WITHDRAWAL_ID,
       userId: USER_ID,
       asset: 'USDT',
+      // A decimal string, never a number: 100.000001 USDT does not survive an
+      // IEEE-754 double, and the scale is the receiver's to decide.
       amount: '100',
       occurredAt: '2026-08-15T10:00:00.000Z',
     });

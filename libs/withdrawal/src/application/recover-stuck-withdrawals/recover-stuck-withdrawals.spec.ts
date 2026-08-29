@@ -1,9 +1,7 @@
 import type { AnyIntegrationEvent } from '@bitex/platform';
 import { RecoverStuckWithdrawals } from './recover-stuck-withdrawals.js';
-import type {
-  RecoverStuckWithdrawalsDependencies,
-  StuckWithdrawal,
-} from './recover-stuck-withdrawals.js';
+import type { RecoverStuckWithdrawalsDependencies } from './recover-stuck-withdrawals.js';
+import type { StuckWithdrawal } from '../ports/stuck-withdrawal-query.port.js';
 import { EventId, UserId, WithdrawalId } from '@bitex/platform';
 
 // Fixed identities. Parsed rather than cast, so the fixtures are
@@ -78,6 +76,7 @@ describe('RecoverStuckWithdrawals', () => {
         aggregateId: WITHDRAWAL_ID,
         occurredAt: new Date('2026-08-15T10:30:00.000Z'),
         payload: {
+          schemaVersion: 1,
           withdrawalId: WITHDRAWAL_ID,
           userId: USER_ID,
           asset: 'USDT',
